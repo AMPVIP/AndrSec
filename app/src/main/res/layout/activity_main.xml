@@ -1,0 +1,37 @@
+<?xml version="1.0" encoding="utf-8"?>
+<LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
+    android:layout_width="match_parent"
+    android:layout_height="match_parent"
+    android:orientation="vertical"
+    android:padding="24dp"
+    android:gravity="center">
+
+    <TextView
+        android:id="@+id/statusText"
+        android:layout_width="wrap_content"
+        android:layout_height="wrap_content"
+        android:text="⚪ Охрана выключена"
+        android:textSize="20sp"
+        android:paddingBottom="24dp"/>
+
+    <Button
+        android:id="@+id/toggleBtn"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:text="Включить охрану"/>
+
+    <Button
+        android:id="@+id/batteryBtn"
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="12dp"
+        android:text="Отключить оптимизацию батареи"/>
+
+    <TextView
+        android:layout_width="match_parent"
+        android:layout_height="wrap_content"
+        android:layout_marginTop="24dp"
+        android:textSize="13sp"
+        android:textColor="#888"
+        android:text="💡 Для надёжной работы: оставьте телефон на зарядке, отключите оптимизацию батареи и не выгружайте приложение из недавних."/>
+</LinearLayout>

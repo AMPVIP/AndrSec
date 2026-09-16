@@ -1,0 +1,12 @@
+# Скопируй в gradle.properties и заполни своими значениями
+
+# VK Bot
+VK_BOT_TOKEN=vk1.a.ВАШ_ТОКЕН_ЗДЕСЬ
+VK_GROUP_ID=123456789
+VK_ALLOWED_PEER=987654321
+
+# Android
+android.useAndroidX=true
+android.nonTransitiveRClass=true
+org.gradle.jvmargs=-Xmx2048m -Dfile.encoding=UTF-8
+kotlin.code.style=official
