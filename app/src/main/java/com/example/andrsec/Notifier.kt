@@ -29,4 +29,24 @@ object Notifier {
             e.printStackTrace()
         }
     }
+    suspend fun sendWithPhoto(message: String, attachment: String) = withContext(Dispatchers.IO) {
+        val url = "https://api.vk.com/method/messages.send"
+        val body = FormBody.Builder()
+            .add("peer_id", PEER_ID)
+            .add("message", message)
+            .add("attachment", attachment)      // ← вложение
+            .add("random_id", (0..2_000_000_000).random().toString())
+            .add("access_token", VK_TOKEN)
+            .add("v", "5.199")
+            .build()
+        try {
+            client.newCall(Request.Builder().url(url).post(body).build())
+                .execute().use { resp ->
+                    val respBody = resp.body?.string()
+                    println("Notifier.sendWithPhoto code=${resp.code} body=$respBody")
+                }
+        } catch (e: IOException) {
+            e.printStackTrace()
+        }
+    }
 }

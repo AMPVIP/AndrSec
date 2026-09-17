@@ -148,6 +148,10 @@ class VkBot(
                 val status = if (GuardService.isRunning) "🟢 на охране" else "⚪ снята"
                 sendMessage(peerId, "Статус: $status")
             }
+            text.contains("фото") -> {
+                sendMessage(peerId, "📸 Делаю снимок...")
+                onCommand("PHOTO")
+            }
             text == "помощь" || text == "help" || text == "/help" -> {
                 sendMessage(peerId, "Команды:\n• поставить — вкл охрану\n• снять — выкл охрану\n• статус — текущее состояние\n• помощь — этот список")
             }

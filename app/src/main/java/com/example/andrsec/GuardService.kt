@@ -18,6 +18,13 @@ import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.launch
+import java.io.File
+import java.util.Locale
+import androidx.camera.core.ImageCapture
+import androidx.camera.core.ImageCaptureException
+import java.text.SimpleDateFormat
+import kotlinx.coroutines.delay
+
 class GuardService : LifecycleService() {
 
     companion object {
@@ -131,8 +138,11 @@ class GuardService : LifecycleService() {
     // ---------- Охрана ----------
 
     private fun startGuard() {
-        soundDetector.start(lifecycleScope)
         startCamera()
+        lifecycleScope.launch(Dispatchers.Main) {
+            delay(3000)                // ← 3 секунды на привязку камеры
+            soundDetector.start(lifecycleScope)
+        }
         updateNotification("🟢 Охрана активна", "Слежу за движением и звуком")
     }
     private fun startVkBot() {
@@ -147,6 +157,7 @@ class GuardService : LifecycleService() {
                     when (cmd) {
                         "ARM" -> startGuardFromRemote()
                         "DISARM" -> stopGuard()
+                        "PHOTO" -> takePhotoAndSend("📸 Снимок по запросу")
                     }
                 }
             },
@@ -177,6 +188,7 @@ class GuardService : LifecycleService() {
         startGuard()
         updateNotification("🟢 Охрана активна", "Слежу за движением и звуком")
     }
+    private var imageCapture: ImageCapture? = null
     private fun startCamera() {
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
@@ -197,12 +209,18 @@ class GuardService : LifecycleService() {
                             }
                         )
                     }
+                // Захват фото
+                imageCapture = ImageCapture.Builder()
+                    .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
+                    .setTargetResolution(android.util.Size(1280, 720))
+                    .build()
 
                 provider.unbindAll()
                 provider.bindToLifecycle(
                     this,
                     CameraSelector.DEFAULT_BACK_CAMERA,
-                    analysis
+                    analysis,
+                            imageCapture
                 )
             } catch (e: Exception) {
                 e.printStackTrace()
@@ -210,17 +228,66 @@ class GuardService : LifecycleService() {
             }
         }, ContextCompat.getMainExecutor(this))
     }
-
-    private fun onAlarm(reason: String) {
-        val nm = getSystemService(NotificationManager::class.java)
-        nm.notify(
-            NOTIF_ID + 1,
-            buildNotification("🚨 ТРЕВОГА", reason, isAlarm = true)
-        )
-
-        lifecycleScope.launch {
-            Notifier.send("🚨 ТРЕВОГА!\n$reason\nВремя: ${java.util.Date()}")
+    private fun takePhotoAndSend(reason: String) {
+        val capture = imageCapture
+        if (capture == null) {
+            println("GuardService: imageCapture == null, пропускаем фото")
+            return
         }
+
+        // Файл во внутреннем кеше приложения
+        val photoDir = File(cacheDir, "photos").apply { mkdirs() }
+        val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(java.util.Date())
+        val photoFile = File(photoDir, "alarm_$timestamp.jpg")
+
+        val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
+
+        capture.takePicture(
+            outputOptions,
+            ContextCompat.getMainExecutor(this),
+            object : ImageCapture.OnImageSavedCallback {
+                override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
+                    println("GuardService: фото сохранено ${photoFile.absolutePath}")
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        try {
+                            val attachment = VkPhotoUploader.uploadAndGetAttachment(photoFile)
+                            if (attachment != null) {
+                                Notifier.sendWithPhoto(
+                                    message = "🚨 ТРЕВОГА!\n$reason\nВремя: ${java.util.Date()}",
+                                    attachment = attachment
+                                )
+                            } else {
+                                // fallback — отправляем только текст
+                                Notifier.send("🚨 ТРЕВОГА!\n$reason\nВремя: ${java.util.Date()}\n(фото не загрузилось)")
+                            }
+                        } catch (e: Exception) {
+                            println("GuardService: upload exception ${e.message}")
+                            Notifier.send("🚨 ТРЕВОГА!\n$reason\n(ошибка загрузки фото: ${e.message})")
+                        } finally {
+                            photoFile.delete()      // чистим за собой
+                        }
+                    }
+                }
+
+                override fun onError(exception: ImageCaptureException) {
+                    println("GuardService: takePicture error ${exception.message}")
+                    // fallback — просто текст
+                    lifecycleScope.launch(Dispatchers.IO) {
+                        Notifier.send("🚨 ТРЕВОГА!\n$reason\n(фото не удалось снять)")
+                    }
+                }
+            }
+        )
+    }
+    private fun onAlarm(reason: String) {
+        // 🔕 Локальное уведомление отключено — тревога уходит только в VK
+        // val nm = getSystemService(NotificationManager::class.java)
+        // nm.notify(
+        //     NOTIF_ID + 1,
+        //     buildNotification("🚨 ТРЕВОГА", reason, isAlarm = true)
+        // )
+
+        takePhotoAndSend(reason)
     }
 
     // ---------- WakeLock ----------

@@ -26,10 +26,12 @@ class App : Application() {
             val serviceChannel = NotificationChannel(
                 CHANNEL_ID,
                 "Охрана (фоновая служба)",
-                NotificationManager.IMPORTANCE_LOW
+                NotificationManager.IMPORTANCE_MIN
             ).apply {
                 description = "Постоянное уведомление о работе охраны"
                 setShowBadge(false)
+                enableVibration(false)                          // ← без вибрации
+                setSound(null, null)            // ← без звука
             }
 
             val alarmChannel = NotificationChannel(
