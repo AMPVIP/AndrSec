@@ -6,7 +6,7 @@ import android.media.MediaRecorder
 import kotlinx.coroutines.*
 
 class SoundDetector(
-    private val thresholdDb: Double = 70.0,
+    var thresholdDb: Double = 70.0,
     private val cooldownMs: Long = 10_000,
     private val onSoundDetected: (Double) -> Unit
 ) {

@@ -141,7 +141,9 @@ class GuardService : LifecycleService() {
         startCamera()
         lifecycleScope.launch(Dispatchers.Main) {
             delay(3000)                // ← 3 секунды на привязку камеры
+            soundDetector.thresholdDb = 70.0     // нормальный порог
             soundDetector.start(lifecycleScope)
+            motionDetector?.sensitivity = 5       // нормальная чувствительность
         }
         updateNotification("🟢 Охрана активна", "Слежу за движением и звуком")
     }
@@ -165,10 +167,12 @@ class GuardService : LifecycleService() {
         ).also { it.start(lifecycleScope) }
     }
     private fun stopGuard() {
-        soundDetector.stop()
-        cameraProvider?.unbindAll()
+        soundDetector.thresholdDb = 200.0        // никогда не сработает
+        motionDetector?.sensitivity = 100        // 100% пикселей — не сработает
+        // ⚠️ НЕ отвязываем камеру — иначе FGS с типом camera|microphone убьётся
         isRunning = false
         updateNotification("⚪ Охрана снята", "Бот слушает команды")
+        println("GuardService: охрана снята, пороги подняты")
     }
     private fun fullStop() {
         soundDetector.stop()
@@ -179,16 +183,25 @@ class GuardService : LifecycleService() {
         stopSelf()
     }
     private fun startGuardFromRemote() {
-        if (isRunning && soundDetector.isRunning) {
-            // Уже на охране — ничего не делаем
-            return
-        }
-        // Запускаем всё заново
+        if (isRunning) return
+
         isRunning = true
-        startGuard()
+
+        if (soundDetector.isRunning) {
+            // Детекторы живы — просто возвращаем пороги
+            soundDetector.thresholdDb = 70.0
+            motionDetector?.sensitivity = 5
+            println("GuardService: охрана поставлена, пороги восстановлены")
+        } else {
+            // Детекторы не запущены (после ребута/падения) — полный рестарт
+            startGuard()
+            println("GuardService: охрана поставлена, полный рестарт")
+        }
+
         updateNotification("🟢 Охрана активна", "Слежу за движением и звуком")
     }
     private var imageCapture: ImageCapture? = null
+    private var motionDetector: MotionDetector? = null
     private fun startCamera() {
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
@@ -196,20 +209,19 @@ class GuardService : LifecycleService() {
                 val provider = providerFuture.get()
                 cameraProvider = provider
 
-                // Preview не нужен — только анализ. Это экономит батарею.
+                // Создаём MotionDetector и сохраняем ссылку
+                motionDetector = MotionDetector(sensitivity = 5) {
+                    onAlarm("🎥 Обнаружено движение!")
+                }
+
                 val analysis = ImageAnalysis.Builder()
                     .setBackpressureStrategy(ImageAnalysis.STRATEGY_KEEP_ONLY_LATEST)
                     .setTargetResolution(android.util.Size(640, 480))
                     .build()
                     .also {
-                        it.setAnalyzer(
-                            cameraExecutor,
-                            MotionDetector(sensitivity = 5) {
-                                onAlarm("🎥 Обнаружено движение!")
-                            }
-                        )
+                        it.setAnalyzer(cameraExecutor, motionDetector!!)
                     }
-                // Захват фото
+
                 imageCapture = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .setTargetResolution(android.util.Size(1280, 720))
@@ -220,8 +232,10 @@ class GuardService : LifecycleService() {
                     this,
                     CameraSelector.DEFAULT_BACK_CAMERA,
                     analysis,
-                            imageCapture
+                    imageCapture
                 )
+
+                println("GuardService: камера привязана, motionDetector=$motionDetector, imageCapture=$imageCapture")
             } catch (e: Exception) {
                 e.printStackTrace()
                 onAlarm("❌ Ошибка камеры: ${e.message}")

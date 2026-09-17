@@ -4,7 +4,7 @@ import androidx.camera.core.ImageAnalysis
 import androidx.camera.core.ImageProxy
 
 class MotionDetector(
-    private val sensitivity: Int = 5,           // % изменённых пикселей
+    var sensitivity: Int = 5,           // % изменённых пикселей
     private val cooldownMs: Long = 10_000,
     private val onMotion: () -> Unit
 ) : ImageAnalysis.Analyzer {
