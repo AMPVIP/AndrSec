@@ -28,6 +28,13 @@ object VkPhotoUploader {
     suspend fun uploadAndGetAttachment(photoFile: File, maxAttempts: Int = 5): String? =
         withContext(Dispatchers.IO) {
             println("VkPhotoUploader: file size=${photoFile.length()}")
+            val token = BotSettings.getToken(context)
+            val groupId = BotSettings.getGroupId(context)
+
+            if (token.isEmpty() || groupId <= 0) {
+                println("VkPhotoUploader: настройки не заполнены")
+                return@withContext null
+            }
 
             if (!photoFile.exists() || photoFile.length() == 0L) {
                 println("VkPhotoUploader: файл пустой")

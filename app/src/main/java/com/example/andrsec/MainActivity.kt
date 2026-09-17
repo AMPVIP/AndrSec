@@ -31,7 +31,9 @@ class MainActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_main)
-
+        findViewById<Button>(R.id.settingsBtn).setOnClickListener {
+            startActivity(Intent(this, SettingsActivity::class.java))
+        }
         statusText = findViewById(R.id.statusText)
         toggleBtn = findViewById(R.id.toggleBtn)
         batteryBtn = findViewById(R.id.batteryBtn)

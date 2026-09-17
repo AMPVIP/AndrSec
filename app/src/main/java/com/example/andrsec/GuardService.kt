@@ -149,12 +149,21 @@ class GuardService : LifecycleService() {
     }
     private fun startVkBot() {
         if (vkBot != null) return
+
+        val token = BotSettings.getToken(this)
+        val groupId = BotSettings.getGroupId(this)
+        val peerId = BotSettings.getPeerId(this)
+
+        if (token.isEmpty() || groupId <= 0 || peerId <= 0) {
+            println("GuardService: настройки VK не заполнены")
+            return
+        }
+
         vkBot = VkBot(
-            token = VK_TOKEN,
-            groupId = VK_GROUP_ID,
-            allowedPeerId = VK_ALLOWED_PEER,
+            token = token,
+            groupId = groupId,
+            allowedPeerId = peerId,
             onCommand = { cmd ->
-                // ⚠️ VkBot вызывает это из Dispatchers.IO — переключаемся на Main
                 lifecycleScope.launch(Dispatchers.Main) {
                     when (cmd) {
                         "ARM" -> startGuardFromRemote()
@@ -264,15 +273,14 @@ class GuardService : LifecycleService() {
                     println("GuardService: фото сохранено ${photoFile.absolutePath}")
                     lifecycleScope.launch(Dispatchers.IO) {
                         try {
-                            val attachment = VkPhotoUploader.uploadAndGetAttachment(photoFile)
+                            val attachment = VkPhotoUploader.uploadAndGetAttachment(this@GuardService, photoFile)
                             if (attachment != null) {
-                                Notifier.sendWithPhoto(
-                                    message = "🚨 ТРЕВОГА!\n$reason\nВремя: ${java.util.Date()}",
-                                    attachment = attachment
+                                Notifier.sendWithPhoto(this@GuardService,
+                                    "🚨 ТРЕВОГА!\n$reason\nВремя: ${java.util.Date()}",
+                                    attachment
                                 )
                             } else {
-                                // fallback — отправляем только текст
-                                Notifier.send("🚨 ТРЕВОГА!\n$reason\nВремя: ${java.util.Date()}\n(фото не загрузилось)")
+                                Notifier.send(this@GuardService, "🚨 ТРЕВОГА!\n$reason\n(фото не загрузилось)")
                             }
                         } catch (e: Exception) {
                             println("GuardService: upload exception ${e.message}")
