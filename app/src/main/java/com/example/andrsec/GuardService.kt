@@ -17,7 +17,6 @@ import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
 import kotlinx.coroutines.Dispatchers
-import kotlinx.coroutines.launch
 import java.io.File
 import java.util.Locale
 import androidx.camera.core.ImageCapture
@@ -36,9 +35,6 @@ class GuardService : LifecycleService() {
         @Volatile
         var isRunning = false
             private set
-        private const val VK_TOKEN = BuildConfig.BOT_TOKEN
-        private val VK_GROUP_ID = BuildConfig.VK_GROUP_ID.toLong()
-        private val VK_ALLOWED_PEER = BuildConfig.VK_ALLOWED_PEER.toLong()
     }
 
     private val soundDetector = SoundDetector(thresholdDb = 70.0) { db ->
@@ -284,7 +280,7 @@ class GuardService : LifecycleService() {
                             }
                         } catch (e: Exception) {
                             println("GuardService: upload exception ${e.message}")
-                            Notifier.send("🚨 ТРЕВОГА!\n$reason\n(ошибка загрузки фото: ${e.message})")
+                            Notifier.send(this@GuardService, "🚨 ТРЕВОГА!\n$reason\n(ошибка загрузки фото: ${e.message})")
                         } finally {
                             photoFile.delete()      // чистим за собой
                         }
@@ -293,9 +289,8 @@ class GuardService : LifecycleService() {
 
                 override fun onError(exception: ImageCaptureException) {
                     println("GuardService: takePicture error ${exception.message}")
-                    // fallback — просто текст
                     lifecycleScope.launch(Dispatchers.IO) {
-                        Notifier.send("🚨 ТРЕВОГА!\n$reason\n(фото не удалось снять)")
+                        Notifier.send(this@GuardService, "🚨 ТРЕВОГА!\n$reason\n(фото не удалось снять)")
                     }
                 }
             }

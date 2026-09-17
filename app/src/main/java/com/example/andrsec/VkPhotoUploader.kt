@@ -1,5 +1,6 @@
 package com.example.andrsec
 
+import android.content.Context
 import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.withContext
@@ -18,103 +19,104 @@ object VkPhotoUploader {
         .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
-    private val VK_TOKEN = BuildConfig.BOT_TOKEN
-    private val VK_GROUP_ID = BuildConfig.VK_GROUP_ID
-
     /**
      * Возвращает строку вида "photo-241543229_457239018"
      * или null, если что-то пошло не так.
      */
-    suspend fun uploadAndGetAttachment(photoFile: File, maxAttempts: Int = 5): String? =
-        withContext(Dispatchers.IO) {
-            println("VkPhotoUploader: file size=${photoFile.length()}")
-            val token = BotSettings.getToken(context)
-            val groupId = BotSettings.getGroupId(context)
+    suspend fun uploadAndGetAttachment(
+        context: Context,
+        photoFile: File,
+        maxAttempts: Int = 5
+    ): String? = withContext(Dispatchers.IO) {
 
-            if (token.isEmpty() || groupId <= 0) {
-                println("VkPhotoUploader: настройки не заполнены")
-                return@withContext null
-            }
+        val token = BotSettings.getToken(context)
+        val groupId = BotSettings.getGroupId(context)
 
-            if (!photoFile.exists() || photoFile.length() == 0L) {
-                println("VkPhotoUploader: файл пустой")
-                return@withContext null
-            }
-
-            repeat(maxAttempts) { attempt ->
-                println("VkPhotoUploader: attempt ${attempt + 1}/$maxAttempts")
-
-                // 1. Новый upload_url
-                val uploadUrl = getUploadUrl()
-                if (uploadUrl == null) {
-                    println("VkPhotoUploader: getUploadUrl failed")
-                    delay(500)
-                    return@repeat
-                }
-
-                // 2. Загрузка
-                val uploadResponse = uploadFile(uploadUrl, photoFile)
-                if (uploadResponse == null) {
-                    println("VkPhotoUploader: uploadFile null")
-                    delay(500)
-                    return@repeat
-                }
-
-                val uploadJson = JSONObject(uploadResponse)
-                val server = uploadJson.optInt("server", -1)
-                val photo = uploadJson.optString("photo", "")
-                val hash = uploadJson.optString("hash", "")
-
-                // Ключевая проверка
-                if (server == -1 || photo.isEmpty() || photo == "[]" || hash.isEmpty()) {
-                    val shortPhoto = if (photo.length > 20) photo.take(20) + "..." else photo
-                    println("VkPhotoUploader: bad upload (photo='$shortPhoto')")
-                    delay(1000)
-                    return@repeat
-                }
-
-                println("VkPhotoUploader: uploaded ok (${photo.length} bytes)")
-
-                // 3. Сохранение
-                val saveResponse = savePhoto(server, photo, hash)
-                if (saveResponse == null) {
-                    println("VkPhotoUploader: savePhoto null")
-                    delay(500)
-                    return@repeat
-                }
-
-                val saveJson = JSONObject(saveResponse)
-                if (saveJson.has("error")) {
-                    val errMsg = saveJson.getJSONObject("error").optString("error_msg", "unknown")
-                    println("VkPhotoUploader: save error: $errMsg")
-                    delay(500)
-                    return@repeat
-                }
-
-                val responseArr = saveJson.optJSONArray("response")
-                if (responseArr == null || responseArr.length() == 0) {
-                    println("VkPhotoUploader: bad save response")
-                    delay(500)
-                    return@repeat
-                }
-
-                val photoObj = responseArr.getJSONObject(0)
-                val ownerId = photoObj.getLong("owner_id")
-                val id = photoObj.getLong("id")
-                val attachment = "photo${ownerId}_${id}"
-                println("VkPhotoUploader: attachment=$attachment")
-                return@withContext attachment
-            }
-
-            println("VkPhotoUploader: все $maxAttempts попытки провалились")
-            null
+        if (token.isEmpty() || groupId <= 0) {
+            println("VkPhotoUploader: настройки VK не заполнены")
+            return@withContext null
         }
+
+        println("VkPhotoUploader: file size=${photoFile.length()}")
+
+        if (!photoFile.exists() || photoFile.length() == 0L) {
+            println("VkPhotoUploader: файл пустой")
+            return@withContext null
+        }
+
+        repeat(maxAttempts) { attempt ->
+            println("VkPhotoUploader: attempt ${attempt + 1}/$maxAttempts")
+
+            // 1. Новый upload_url
+            val uploadUrl = getUploadUrl(token, groupId)
+            if (uploadUrl == null) {
+                println("VkPhotoUploader: getUploadUrl failed")
+                delay(500)
+                return@repeat
+            }
+
+            // 2. Загрузка
+            val uploadResponse = uploadFile(uploadUrl, photoFile)
+            if (uploadResponse == null) {
+                println("VkPhotoUploader: uploadFile null")
+                delay(500)
+                return@repeat
+            }
+
+            val uploadJson = JSONObject(uploadResponse)
+            val server = uploadJson.optInt("server", -1)
+            val photo = uploadJson.optString("photo", "")
+            val hash = uploadJson.optString("hash", "")
+
+            if (server == -1 || photo.isEmpty() || photo == "[]" || hash.isEmpty()) {
+                val shortPhoto = if (photo.length > 20) photo.take(20) + "..." else photo
+                println("VkPhotoUploader: bad upload (photo='$shortPhoto')")
+                delay(1000)
+                return@repeat
+            }
+
+            println("VkPhotoUploader: uploaded ok (${photo.length} bytes)")
+
+            // 3. Сохранение
+            val saveResponse = savePhoto(token, groupId, server, photo, hash)
+            if (saveResponse == null) {
+                println("VkPhotoUploader: savePhoto null")
+                delay(500)
+                return@repeat
+            }
+
+            val saveJson = JSONObject(saveResponse)
+            if (saveJson.has("error")) {
+                val errMsg = saveJson.getJSONObject("error").optString("error_msg", "unknown")
+                println("VkPhotoUploader: save error: $errMsg")
+                delay(500)
+                return@repeat
+            }
+
+            val responseArr = saveJson.optJSONArray("response")
+            if (responseArr == null || responseArr.length() == 0) {
+                println("VkPhotoUploader: bad save response")
+                delay(500)
+                return@repeat
+            }
+
+            val photoObj = responseArr.getJSONObject(0)
+            val ownerId = photoObj.getLong("owner_id")
+            val id = photoObj.getLong("id")
+            val attachment = "photo${ownerId}_${id}"
+            println("VkPhotoUploader: attachment=$attachment")
+            return@withContext attachment
+        }
+
+        println("VkPhotoUploader: все $maxAttempts попытки провалились")
+        null
+    }
 
     // ---------- 1. upload_url ----------
 
-    private fun getUploadUrl(): String? {
+    private fun getUploadUrl(token: String, groupId: Long): String? {
         val url = "https://api.vk.com/method/photos.getMessagesUploadServer" +
-                "?group_id=$VK_GROUP_ID&access_token=$VK_TOKEN&v=5.199"
+                "?group_id=$groupId&access_token=$token&v=5.199"
         val req = Request.Builder().url(url).build()
         return try {
             client.newCall(req).execute().use { resp ->
@@ -162,14 +164,14 @@ object VkPhotoUploader {
 
     // ---------- 3. save ----------
 
-    private fun savePhoto(server: Int, photo: String, hash: String): String? {
+    private fun savePhoto(token: String, groupId: Long, server: Int, photo: String, hash: String): String? {
         val url = "https://api.vk.com/method/photos.saveMessagesPhoto"
         val body = FormBody.Builder()
             .add("server", server.toString())
             .add("photo", photo)
             .add("hash", hash)
-            .add("group_id", VK_GROUP_ID.toString())
-            .add("access_token", VK_TOKEN)
+            .add("group_id", groupId.toString())
+            .add("access_token", token)
             .add("v", "5.199")
             .build()
         val req = Request.Builder().url(url).post(body).build()
