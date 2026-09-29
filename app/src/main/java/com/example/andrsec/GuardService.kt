@@ -66,7 +66,10 @@ class GuardService : LifecycleService() {
             }
             else -> {
                 startForegroundCompat()
-                startGuard()
+                lifecycleScope.launch(Dispatchers.Main) {
+                    delay(30_000)
+                    startGuard()
+                }
                 startVkBot()
             }
         }
@@ -165,6 +168,12 @@ class GuardService : LifecycleService() {
                         "ARM" -> startGuardFromRemote()
                         "DISARM" -> stopGuard()
                         "PHOTO" -> takePhotoAndSend("📸 Снимок по запросу")
+                        "BATTERY" -> {
+                            val info = getBatteryInfo()
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                Notifier.send(this@GuardService, "🔋 Батарея:\n$info")
+                            }
+                        }
                     }
                 }
             },
@@ -308,7 +317,33 @@ class GuardService : LifecycleService() {
     }
 
     // ---------- WakeLock ----------
+    private fun getBatteryInfo(): String {
+        val bm = getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
 
+        val level = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_CAPACITY)
+        val status = bm.getIntProperty(android.os.BatteryManager.BATTERY_PROPERTY_STATUS)
+        val charging = when (status) {
+            android.os.BatteryManager.BATTERY_STATUS_CHARGING -> "⚡ Заряжается"
+            android.os.BatteryManager.BATTERY_STATUS_FULL -> "🔌 Полный"
+            android.os.BatteryManager.BATTERY_STATUS_DISCHARGING -> "🔋 Разряжается"
+            android.os.BatteryManager.BATTERY_STATUS_NOT_CHARGING -> "⏸ Не заряжается"
+            else -> "❓ Неизвестно"
+        }
+
+        // Напряжение и температура — через registerReceiver
+        val intent = registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
+        val tempTenths = intent?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
+        val tempC = tempTenths / 10.0
+        val voltageMv = intent?.getIntExtra(android.os.BatteryManager.EXTRA_VOLTAGE, 0) ?: 0
+        val voltageV = voltageMv / 1000.0
+
+        return """
+        🔋 Уровень: $level%
+        $charging
+        🌡 Температура: ${"%.1f".format(tempC)}°C
+        ⚡ Напряжение: ${"%.2f".format(voltageV)} В
+    """.trimIndent()
+    }
     private fun acquireWakeLock() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(
