@@ -24,29 +24,36 @@ class VkBot(
 
     fun start(scope: CoroutineScope) {
         println("VkBot.start() called, running=$running")
+        if (running) return
         running = true
+
         pollJob = scope.launch(Dispatchers.IO) {
-            try {
-                if (!initLongPoll()) {
-                    onError("Не удалось инициализировать Long Poll")
-                    return@launch
-                }
-                println("VkBot: Long Poll initialized OK")
-                while (running && isActive) {
-                    try {
-                        pollOnce()
-                    } catch (e: Exception) {
-                        println("VkBot: pollOnce exception: ${e.javaClass.simpleName}: ${e.message}")
-                        e.printStackTrace()
-                        onError("Ошибка polling: ${e.message}")
-                        delay(3000)
-                        initLongPoll()
+            while (running && isActive) {
+                try {
+                    if (!initLongPoll()) {
+                        println("VkBot: initLongPoll failed, retry in 10s")
+                        delay(10_000)
+                        continue   // ← не выходим, а пробуем снова
                     }
+                    println("VkBot: Long Poll initialized OK")
+
+                    // Внутренний цикл — пока сессия жива
+                    while (running && isActive) {
+                        try {
+                            pollOnce()
+                        } catch (e: Exception) {
+                            println("VkBot: pollOnce exception ${e.javaClass.simpleName}: ${e.message}")
+                            delay(3000)
+                            break   // ← выходим из внутреннего цикла, переинициализация
+                        }
+                    }
+                } catch (e: Exception) {
+                    println("VkBot: outer exception ${e.javaClass.simpleName}: ${e.message}")
+                    delay(5000)
+                    // не выходим — продолжаем цикл
                 }
-            } catch (e: Exception) {
-                println("VkBot: FATAL exception: ${e.javaClass.simpleName}: ${e.message}")
-                e.printStackTrace()
             }
+            println("VkBot: poll loop ended")
         }
     }
 
@@ -93,26 +100,49 @@ class VkBot(
 
     // ---------- Long Poll one iteration ----------
 
-    private fun pollOnce() {
-        println("VkBot: pollOnce, ts=$ts")
+    private suspend fun pollOnce() {
         val url = "$server?act=a_check&key=$key&ts=$ts&wait=25"
         val req = Request.Builder().url(url).build()
         client.newCall(req).execute().use { resp ->
             val bodyStr = resp.body?.string()
-            println("VkBot: pollOnce response code=${resp.code}, body=${bodyStr?.take(200)}")
 
-            // ⚠️ Парсим ИЗ bodyStr, а не из resp.body ещё раз
-            val json = if (bodyStr.isNullOrEmpty()) return else JSONObject(bodyStr)
+            if (bodyStr.isNullOrEmpty()) return
+            val json = JSONObject(bodyStr)
 
             if (json.has("failed")) {
-                when (json.getInt("failed")) {
-                    1 -> ts = json.getString("ts")
-                    2, 3 -> initLongPoll()
+                val failed = json.getInt("failed")
+                println("VkBot: Long Poll failed=$failed")
+                when (failed) {
+                    1 -> {
+                        // ts устарел — обновить
+                        ts = json.getString("ts")
+                    }
+                    2, 3 -> {
+                        // key/server устарели — полная переинициализация
+                        ts = ""; key = ""; server = ""
+                        initLongPoll()
+                    }
+                    4 -> {
+                        // Лимит запросов — подождать
+                        delay(5000)
+                        initLongPoll()
+                    }
+                    else -> {
+                        // Неизвестный код — переинициализация
+                        initLongPoll()
+                    }
                 }
                 return
             }
+
             ts = json.getString("ts")
             val updates = json.optJSONArray("updates") ?: return
+
+            // Логируем только если есть события
+            if (updates.length() > 0) {
+                println("VkBot: updates count=${updates.length()}, ts=$ts")
+            }
+
             for (i in 0 until updates.length()) {
                 handleUpdate(updates.getJSONObject(i))
             }
@@ -136,11 +166,11 @@ class VkBot(
         }
 
         when {
-            text.contains("поставить") || text == "вкл" || text == "on" -> {
+            text.contains("вкл") || text == "on" -> {
                 onCommand("ARM")
                 sendMessage(peerId, "🟢 Охрана поставлена")
             }
-            text.contains("снять") || text == "выкл" || text == "off" -> {
+            text.contains("выкл") || text == "off" -> {
                 onCommand("DISARM")
                 sendMessage(peerId, "⚪ Охрана снята")
             }
@@ -148,7 +178,7 @@ class VkBot(
                 val status = if (GuardService.isRunning) "🟢 на охране" else "⚪ снята"
                 sendMessage(peerId, "Статус: $status")
             }
-            text.contains("фото") -> {
+            text.contains("фото") || text == "photo" -> {
                 sendMessage(peerId, "📸 Делаю снимок...")
                 onCommand("PHOTO")
             }
@@ -156,15 +186,15 @@ class VkBot(
                 onCommand("BATTERY")
                 // Ответ придёт из GuardService — не отправляем здесь
             }
-            text == "помощь" || text == "help" || text == "/help" -> {
+            text == "помощь" || text == "help" -> {
                 sendMessage(peerId, """
         📋 Команды:
-        • поставить — вкл охрану
-        • снять — выкл охрану
-        • статус — текущее состояние
-        • фото — снимок с камеры
-        • батарея — уровень заряда
-        • помощь — этот список
+        • вкл/on — вкл охрану
+        • выкл/off — выкл охрану
+        • статус/status — текущее состояние
+        • фото/photo — снимок с камеры
+        • батарея/battery — уровень заряда
+        • помощь/help — этот список
     """.trimIndent())
             }
             else -> {

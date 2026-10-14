@@ -28,6 +28,7 @@ class GuardService : LifecycleService() {
 
     companion object {
         const val ACTION_START = "ACTION_START"
+        const val ACTION_ARM = "ACTION_ARM"
         const val ACTION_STOP = "ACTION_STOP"
         const val ACTION_DISARM = "ACTION_DISARM"
         const val NOTIF_ID = 1001
@@ -56,21 +57,21 @@ class GuardService : LifecycleService() {
 
         when (intent?.action) {
             ACTION_STOP -> {
-                // Полная остановка (из уведомления или кнопки)
                 fullStop()
                 return START_NOT_STICKY
             }
             ACTION_DISARM -> {
-                // Только выключить камеру/микрофон, служба остаётся
                 stopGuard()
             }
+            ACTION_ARM -> {
+                // Явное включение охраны (после отсчёта в MainActivity)
+                startGuardFromRemote()
+            }
             else -> {
-                startForegroundCompat()
-                lifecycleScope.launch(Dispatchers.Main) {
-                    delay(30_000)
-                    startGuard()
-                }
+                // Старт службы — только бот, без охраны
+                startForegroundCompat(withCamera = false)
                 startVkBot()
+                startCamera()  // для команды "фото" без охраны
             }
         }
         return START_STICKY
@@ -78,20 +79,33 @@ class GuardService : LifecycleService() {
 
     // ---------- Foreground ----------
 
-    private fun startForegroundCompat() {
-        val notification = buildNotification("🟢 Охрана активна", "Слежу за движением и звуком")
+    private fun startForegroundCompat(withCamera: Boolean = false) {
+        val notification = buildNotification(
+            if (withCamera) "🟢 Охрана активна" else "⚪ Охрана снята",
+            if (withCamera) "Слежу за движением и звуком" else "Бот слушает команды"
+        )
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            val types = if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.R) {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+        try {
+            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+                val types = if (withCamera) {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
+                            ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                } else {
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                }
+                startForeground(NOTIF_ID, notification, types)
+                println("GuardService: startForeground OK, withCamera=$withCamera")
             } else {
-                ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
-                        ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
+                startForeground(NOTIF_ID, notification)
             }
-            startForeground(NOTIF_ID, notification, types)
-        } else {
-            startForeground(NOTIF_ID, notification)
+        } catch (e: Exception) {
+            println("GuardService: startForeground FAILED: ${e.javaClass.simpleName}: ${e.message}")
+            e.printStackTrace()
+            try {
+                startForeground(NOTIF_ID, notification)
+            } catch (e2: Exception) {
+                println("GuardService: fallback startForeground FAILED: ${e2.message}")
+            }
         }
     }
 
@@ -137,13 +151,19 @@ class GuardService : LifecycleService() {
     // ---------- Охрана ----------
 
     private fun startGuard() {
+        // Переключаем FGS на camera|microphone
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForegroundCompat(withCamera = true)
+        }
+
         startCamera()
         lifecycleScope.launch(Dispatchers.Main) {
-            delay(3000)                // ← 3 секунды на привязку камеры
-            soundDetector.thresholdDb = 70.0     // нормальный порог
+            delay(3000)
+            soundDetector.thresholdDb = 70.0
             soundDetector.start(lifecycleScope)
-            motionDetector?.sensitivity = 5       // нормальная чувствительность
+            motionDetector?.sensitivity = 5
         }
+        isRunning = true
         updateNotification("🟢 Охрана активна", "Слежу за движением и звуком")
     }
     private fun startVkBot() {
@@ -181,12 +201,17 @@ class GuardService : LifecycleService() {
         ).also { it.start(lifecycleScope) }
     }
     private fun stopGuard() {
-        soundDetector.thresholdDb = 200.0        // никогда не сработает
-        motionDetector?.sensitivity = 100        // 100% пикселей — не сработает
-        // ⚠️ НЕ отвязываем камеру — иначе FGS с типом camera|microphone убьётся
+        soundDetector.thresholdDb = 200.0
+        motionDetector?.sensitivity = 100
+
+        // Переключаем FGS на dataSync — камера/микрофон больше не используются
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForegroundCompat(withCamera = false)
+        }
+
         isRunning = false
         updateNotification("⚪ Охрана снята", "Бот слушает команды")
-        println("GuardService: охрана снята, пороги подняты")
+        println("GuardService: охрана снята, FGS переключён на dataSync")
     }
     private fun fullStop() {
         soundDetector.stop()
@@ -198,16 +223,18 @@ class GuardService : LifecycleService() {
     }
     private fun startGuardFromRemote() {
         if (isRunning) return
-
         isRunning = true
 
-        if (soundDetector.isRunning) {
-            // Детекторы живы — просто возвращаем пороги
+        // Переключаем FGS на camera|microphone
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            startForegroundCompat(withCamera = true)
+        }
+
+        if (soundDetector.isRunning && imageCapture != null) {
             soundDetector.thresholdDb = 70.0
             motionDetector?.sensitivity = 5
             println("GuardService: охрана поставлена, пороги восстановлены")
         } else {
-            // Детекторы не запущены (после ребута/падения) — полный рестарт
             startGuard()
             println("GuardService: охрана поставлена, полный рестарт")
         }
@@ -239,6 +266,7 @@ class GuardService : LifecycleService() {
                 imageCapture = ImageCapture.Builder()
                     .setCaptureMode(ImageCapture.CAPTURE_MODE_MINIMIZE_LATENCY)
                     .setTargetResolution(android.util.Size(1280, 720))
+                    .setJpegQuality(70)
                     .build()
 
                 provider.unbindAll()
@@ -351,7 +379,7 @@ class GuardService : LifecycleService() {
             "GuardService::WakeLock"
         ).apply {
             setReferenceCounted(false)
-            acquire(10 * 60 * 60 * 1000L) // максимум 10 часов
+            acquire()
         }
     }
 
