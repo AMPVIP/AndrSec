@@ -12,7 +12,7 @@ import androidx.camera.lifecycle.ProcessCameraProvider
 import androidx.camera.view.PreviewView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
-import androidx.lifecycle.LifecycleService          // ← ключевой
+import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
@@ -36,9 +36,12 @@ class GuardService : LifecycleService() {
         @Volatile
         var isRunning = false
             private set
+        @Volatile
+        var isServiceAlive = false
+            private set
     }
 
-    private val soundDetector = SoundDetector(thresholdDb = 70.0) { db ->
+    private val soundDetector = SoundDetector(thresholdDb = 200.0) { db ->
         onAlarm("🔊 Громкий звук: ${"%.1f".format(db)} dB")
     }
     private var vkBot: VkBot? = null
@@ -48,12 +51,15 @@ class GuardService : LifecycleService() {
 
     override fun onCreate() {
         super.onCreate()
-        isRunning = true
+        FileLogger.log(this, "GuardService: onCreate")
+        isServiceAlive = true
+        isRunning = false
         acquireWakeLock()
     }
 
     override fun onStartCommand(intent: Intent?, flags: Int, startId: Int): Int {
         super.onStartCommand(intent, flags, startId)
+        FileLogger.log(this, "onStartCommand action=${intent?.action}")
 
         when (intent?.action) {
             ACTION_STOP -> {
@@ -64,20 +70,25 @@ class GuardService : LifecycleService() {
                 stopGuard()
             }
             ACTION_ARM -> {
-                // Явное включение охраны (после отсчёта в MainActivity)
                 startGuardFromRemote()
             }
             else -> {
-                // Старт службы — только бот, без охраны
+                // ⚠️ Старт службы — только бот. Охрана НЕ включается.
                 startForegroundCompat(withCamera = false)
                 startVkBot()
-                startCamera()  // для команды "фото" без охраны
+                startCamera()
+
+                // Через 3 сек — выставить пороги «выключено»
+                lifecycleScope.launch(Dispatchers.Main) {
+                    delay(3000)
+                    motionDetector?.sensitivity = 100
+                    soundDetector.thresholdDb = 200.0
+                    FileLogger.log(this@GuardService, "служба запущена, пороги максимальные")
+                }
             }
         }
         return START_STICKY
     }
-
-    // ---------- Foreground ----------
 
     private fun startForegroundCompat(withCamera: Boolean = false) {
         val notification = buildNotification(
@@ -151,21 +162,22 @@ class GuardService : LifecycleService() {
     // ---------- Охрана ----------
 
     private fun startGuard() {
-        // Переключаем FGS на camera|microphone
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForegroundCompat(withCamera = true)
         }
-
+        FileLogger.log(this, "startGuard: охрана включается")
         startCamera()
         lifecycleScope.launch(Dispatchers.Main) {
             delay(3000)
             soundDetector.thresholdDb = 70.0
             soundDetector.start(lifecycleScope)
             motionDetector?.sensitivity = 5
+            FileLogger.log(this@GuardService, "startGuard: движение включено (sensitivity=5)")
         }
         isRunning = true
         updateNotification("🟢 Охрана активна", "Слежу за движением и звуком")
     }
+
     private fun startVkBot() {
         if (vkBot != null) return
 
@@ -174,7 +186,7 @@ class GuardService : LifecycleService() {
         val peerId = BotSettings.getPeerId(this)
 
         if (token.isEmpty() || groupId <= 0 || peerId <= 0) {
-            println("GuardService: настройки VK не заполнены")
+            FileLogger.log(this, "настройки VK не заполнены")
             return
         }
 
@@ -188,6 +200,14 @@ class GuardService : LifecycleService() {
                         "ARM" -> startGuardFromRemote()
                         "DISARM" -> stopGuard()
                         "PHOTO" -> takePhotoAndSend("📸 Снимок по запросу")
+                        "STATUS" -> {
+                            val statusText = if (isRunning) "🟢 на охране" else "⚪ снята"
+                            val batteryInfo = getBatteryInfo()
+                            val message = "📊 Статус:\n$statusText\n\n$batteryInfo"
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                Notifier.send(this@GuardService, message)
+                            }
+                        }
                         "BATTERY" -> {
                             val info = getBatteryInfo()
                             lifecycleScope.launch(Dispatchers.IO) {
@@ -197,23 +217,26 @@ class GuardService : LifecycleService() {
                     }
                 }
             },
-            onError = { msg -> println("VkBot: $msg") }
+            onError = { msg -> FileLogger.log(this, "VkBot: $msg") }
         ).also { it.start(lifecycleScope) }
+
+        FileLogger.log(this, "VkBot запущен")
     }
+
     private fun stopGuard() {
         soundDetector.thresholdDb = 200.0
         motionDetector?.sensitivity = 100
 
-        // Переключаем FGS на dataSync — камера/микрофон больше не используются
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForegroundCompat(withCamera = false)
         }
-
         isRunning = false
+        FileLogger.log(this, "stopGuard: охрана снята, sensitivity=100, thresholdDb=200")
         updateNotification("⚪ Охрана снята", "Бот слушает команды")
-        println("GuardService: охрана снята, FGS переключён на dataSync")
     }
+
     private fun fullStop() {
+        FileLogger.log(this, "fullStop")
         soundDetector.stop()
         cameraProvider?.unbindAll()
         vkBot?.stop()
@@ -221,11 +244,11 @@ class GuardService : LifecycleService() {
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
     }
+
     private fun startGuardFromRemote() {
         if (isRunning) return
         isRunning = true
 
-        // Переключаем FGS на camera|microphone
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForegroundCompat(withCamera = true)
         }
@@ -233,16 +256,18 @@ class GuardService : LifecycleService() {
         if (soundDetector.isRunning && imageCapture != null) {
             soundDetector.thresholdDb = 70.0
             motionDetector?.sensitivity = 5
-            println("GuardService: охрана поставлена, пороги восстановлены")
+            FileLogger.log(this, "охрана поставлена, пороги восстановлены")
         } else {
             startGuard()
-            println("GuardService: охрана поставлена, полный рестарт")
+            FileLogger.log(this, "охрана поставлена, полный рестарт")
         }
 
         updateNotification("🟢 Охрана активна", "Слежу за движением и звуком")
     }
+
     private var imageCapture: ImageCapture? = null
     private var motionDetector: MotionDetector? = null
+
     private fun startCamera() {
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
@@ -250,8 +275,8 @@ class GuardService : LifecycleService() {
                 val provider = providerFuture.get()
                 cameraProvider = provider
 
-                // Создаём MotionDetector и сохраняем ссылку
-                motionDetector = MotionDetector(sensitivity = 5) {
+                // ⚠️ sensitivity = 100 (по умолчанию отключено)
+                motionDetector = MotionDetector(sensitivity = 100) {
                     onAlarm("🎥 Обнаружено движение!")
                 }
 
@@ -277,21 +302,21 @@ class GuardService : LifecycleService() {
                     imageCapture
                 )
 
-                println("GuardService: камера привязана, motionDetector=$motionDetector, imageCapture=$imageCapture")
+                FileLogger.log(this, "камера привязана, motionDetector=$motionDetector")
             } catch (e: Exception) {
                 e.printStackTrace()
-                onAlarm("❌ Ошибка камеры: ${e.message}")
+                FileLogger.log(this, "ошибка камеры: ${e.message}")
             }
         }, ContextCompat.getMainExecutor(this))
     }
+
     private fun takePhotoAndSend(reason: String) {
         val capture = imageCapture
         if (capture == null) {
-            println("GuardService: imageCapture == null, пропускаем фото")
+            FileLogger.log(this, "imageCapture == null, пропускаем фото")
             return
         }
 
-        // Файл во внутреннем кеше приложения
         val photoDir = File(cacheDir, "photos").apply { mkdirs() }
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(java.util.Date())
         val photoFile = File(photoDir, "alarm_$timestamp.jpg")
@@ -303,7 +328,7 @@ class GuardService : LifecycleService() {
             ContextCompat.getMainExecutor(this),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                    println("GuardService: фото сохранено ${photoFile.absolutePath}")
+                    FileLogger.log(this@GuardService, "фото сохранено")
                     lifecycleScope.launch(Dispatchers.IO) {
                         try {
                             val attachment = VkPhotoUploader.uploadAndGetAttachment(this@GuardService, photoFile)
@@ -316,16 +341,16 @@ class GuardService : LifecycleService() {
                                 Notifier.send(this@GuardService, "🚨 ТРЕВОГА!\n$reason\n(фото не загрузилось)")
                             }
                         } catch (e: Exception) {
-                            println("GuardService: upload exception ${e.message}")
-                            Notifier.send(this@GuardService, "🚨 ТРЕВОГА!\n$reason\n(ошибка загрузки фото: ${e.message})")
+                            FileLogger.log(this@GuardService, "upload exception ${e.message}")
+                            Notifier.send(this@GuardService, "🚨 ТРЕВОГА!\n$reason\n(ошибка загрузки фото)")
                         } finally {
-                            photoFile.delete()      // чистим за собой
+                            photoFile.delete()
                         }
                     }
                 }
 
                 override fun onError(exception: ImageCaptureException) {
-                    println("GuardService: takePicture error ${exception.message}")
+                    FileLogger.log(this@GuardService, "takePicture error ${exception.message}")
                     lifecycleScope.launch(Dispatchers.IO) {
                         Notifier.send(this@GuardService, "🚨 ТРЕВОГА!\n$reason\n(фото не удалось снять)")
                     }
@@ -333,18 +358,17 @@ class GuardService : LifecycleService() {
             }
         )
     }
-    private fun onAlarm(reason: String) {
-        // 🔕 Локальное уведомление отключено — тревога уходит только в VK
-        // val nm = getSystemService(NotificationManager::class.java)
-        // nm.notify(
-        //     NOTIF_ID + 1,
-        //     buildNotification("🚨 ТРЕВОГА", reason, isAlarm = true)
-        // )
 
+    private fun onAlarm(reason: String) {
+        if (!isRunning) {
+            FileLogger.log(this, "onAlarm: охрана снята, игнорируем: $reason")
+            return
+        }
+        FileLogger.log(this, "ТРЕВОГА: $reason")
         takePhotoAndSend(reason)
     }
 
-    // ---------- WakeLock ----------
+    // ---------- Battery ----------
     private fun getBatteryInfo(): String {
         val bm = getSystemService(Context.BATTERY_SERVICE) as android.os.BatteryManager
 
@@ -358,7 +382,6 @@ class GuardService : LifecycleService() {
             else -> "❓ Неизвестно"
         }
 
-        // Напряжение и температура — через registerReceiver
         val intent = registerReceiver(null, android.content.IntentFilter(android.content.Intent.ACTION_BATTERY_CHANGED))
         val tempTenths = intent?.getIntExtra(android.os.BatteryManager.EXTRA_TEMPERATURE, 0) ?: 0
         val tempC = tempTenths / 10.0
@@ -372,6 +395,8 @@ class GuardService : LifecycleService() {
         ⚡ Напряжение: ${"%.2f".format(voltageV)} В
     """.trimIndent()
     }
+
+    // ---------- WakeLock ----------
     private fun acquireWakeLock() {
         val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
         wakeLock = pm.newWakeLock(
@@ -390,9 +415,9 @@ class GuardService : LifecycleService() {
         wakeLock = null
     }
 
-    // ---------- Lifecycle ----------
-
     override fun onDestroy() {
+        FileLogger.log(this, "GuardService: onDestroy")
+        isServiceAlive = false
         isRunning = false
         soundDetector.stop()
         vkBot?.stop()

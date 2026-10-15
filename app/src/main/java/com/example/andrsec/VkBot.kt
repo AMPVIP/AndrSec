@@ -175,8 +175,7 @@ class VkBot(
                 sendMessage(peerId, "⚪ Охрана снята")
             }
             text.contains("статус") || text == "status" -> {
-                val status = if (GuardService.isRunning) "🟢 на охране" else "⚪ снята"
-                sendMessage(peerId, "Статус: $status")
+                onCommand("STATUS")   // ← вместо старой логики
             }
             text.contains("фото") || text == "photo" -> {
                 sendMessage(peerId, "📸 Делаю снимок...")
