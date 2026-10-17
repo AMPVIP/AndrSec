@@ -8,6 +8,7 @@ object BotSettings {
     private const val KEY_TOKEN = "vk_token"
     private const val KEY_GROUP_ID = "vk_group_id"
     private const val KEY_PEER_ID = "vk_peer_id"
+    private const val KEY_SOUND_ENABLED = "sound_enabled"
 
     private fun prefs(ctx: Context): SharedPreferences =
         ctx.getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
@@ -28,10 +29,16 @@ object BotSettings {
             .putLong(KEY_PEER_ID, peerId)
             .apply()
     }
+    fun isSoundEnabled(ctx: Context): Boolean =
+        prefs(ctx).getBoolean(KEY_SOUND_ENABLED, false)
 
-    fun isConfigured(ctx: Context): Boolean {
-        return getToken(ctx).isNotEmpty() &&
-                getGroupId(ctx) > 0L &&
-                getPeerId(ctx) > 0L
+    fun setSoundEnabled(ctx: Context, enabled: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_SOUND_ENABLED, enabled).apply()
+    }
+
+    fun toggleSound(ctx: Context): Boolean {
+        val newValue = !isSoundEnabled(ctx)
+        setSoundEnabled(ctx, newValue)
+        return newValue
     }
 }

@@ -169,13 +169,20 @@ class GuardService : LifecycleService() {
         startCamera()
         lifecycleScope.launch(Dispatchers.Main) {
             delay(3000)
-            soundDetector.thresholdDb = 70.0
-            soundDetector.start(lifecycleScope)
             motionDetector?.sensitivity = 5
-            FileLogger.log(this@GuardService, "startGuard: движение включено (sensitivity=5)")
+
+            if (BotSettings.isSoundEnabled(this@GuardService)) {
+                soundDetector.thresholdDb = 70.0
+                soundDetector.start(lifecycleScope)
+                FileLogger.log(this@GuardService, "startGuard: звук ВКЛ")
+            } else {
+                soundDetector.thresholdDb = 200.0
+                soundDetector.stop()
+                FileLogger.log(this@GuardService, "startGuard: звук ОТКЛ")
+            }
         }
         isRunning = true
-        updateNotification("🟢 Охрана активна", "Слежу за движением и звуком")
+        updateNotification("🟢 Охрана активна", "Слежу за движением")
     }
 
     private fun startVkBot() {
@@ -202,8 +209,13 @@ class GuardService : LifecycleService() {
                         "PHOTO" -> takePhotoAndSend("📸 Снимок по запросу")
                         "STATUS" -> {
                             val statusText = if (isRunning) "🟢 на охране" else "⚪ снята"
+                            val soundStatus = if (BotSettings.isSoundEnabled(this@GuardService)) {
+                                "🔊 Звук: ВКЛ"
+                            } else {
+                                "🔇 Звук: ОТКЛ"
+                            }
                             val batteryInfo = getBatteryInfo()
-                            val message = "📊 Статус:\n$statusText\n\n$batteryInfo"
+                            val message = "📊 Статус:\n$statusText\n$soundStatus\n\n$batteryInfo"
                             lifecycleScope.launch(Dispatchers.IO) {
                                 Notifier.send(this@GuardService, message)
                             }
@@ -212,6 +224,29 @@ class GuardService : LifecycleService() {
                             val info = getBatteryInfo()
                             lifecycleScope.launch(Dispatchers.IO) {
                                 Notifier.send(this@GuardService, "🔋 Батарея:\n$info")
+                            }
+                        }
+                        "TOGGLE_SOUND" -> {
+                            val newValue = BotSettings.toggleSound(this@GuardService)
+                            FileLogger.log(this@GuardService, "звук переключён: $newValue")
+
+                            if (isRunning) {
+                                if (newValue) {
+                                    soundDetector.thresholdDb = 70.0
+                                    if (!soundDetector.isRunning) {
+                                        soundDetector.start(lifecycleScope)
+                                    }
+                                    FileLogger.log(this@GuardService, "звук включён (70 dB)")
+                                } else {
+                                    soundDetector.thresholdDb = 200.0
+                                    soundDetector.stop()
+                                    FileLogger.log(this@GuardService, "звук отключён (200 dB)")
+                                }
+                            }
+
+                            val reply = if (newValue) "🔊 Тревога по звуку ВКЛЮЧЕНА" else "🔇 Тревога по звуку ОТКЛЮЧЕНА"
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                Notifier.send(this@GuardService, reply)
                             }
                         }
                     }

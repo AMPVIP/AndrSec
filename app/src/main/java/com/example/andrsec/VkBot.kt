@@ -166,6 +166,9 @@ class VkBot(
         }
 
         when {
+            text.startsWith("звук") || text == "sound" -> {
+                onCommand("TOGGLE_SOUND")
+            }
             text.contains("вкл") || text == "on" -> {
                 onCommand("ARM")
                 sendMessage(peerId, "🟢 Охрана поставлена")
@@ -192,6 +195,7 @@ class VkBot(
         • выкл/off — выкл охрану
         • статус/status — текущее состояние
         • фото/photo — снимок с камеры
+        • звук/sound — переключить тревогу по звуку
         • батарея/battery — уровень заряда
         • помощь/help — этот список
     """.trimIndent())
