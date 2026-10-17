@@ -166,6 +166,9 @@ class VkBot(
         }
 
         when {
+            text.startsWith("камера") || text == "camera" -> {
+                onCommand("TOGGLE_CAMERA")
+            }
             text.startsWith("звук") || text == "sound" -> {
                 onCommand("TOGGLE_SOUND")
             }
@@ -196,6 +199,7 @@ class VkBot(
         • статус/status — текущее состояние
         • фото/photo — снимок с камеры
         • звук/sound — переключить тревогу по звуку
+        • камера/camera — переключить камеру (передняя/задняя)
         • батарея/battery — уровень заряда
         • помощь/help — этот список
     """.trimIndent())

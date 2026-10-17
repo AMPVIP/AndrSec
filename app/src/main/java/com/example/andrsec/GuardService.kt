@@ -23,6 +23,7 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import java.text.SimpleDateFormat
 import kotlinx.coroutines.delay
+import java.util.concurrent.atomic.AtomicBoolean
 
 class GuardService : LifecycleService() {
 
@@ -48,7 +49,9 @@ class GuardService : LifecycleService() {
     private var wakeLock: PowerManager.WakeLock? = null
     private var cameraProvider: ProcessCameraProvider? = null
     private val cameraExecutor = Executors.newSingleThreadExecutor()
-
+    private val cameraInProgress = java.util.concurrent.atomic.AtomicBoolean(false)
+    private var lastPhotoTime = 0L
+    private val photoCooldownMs = 2000L
     override fun onCreate() {
         super.onCreate()
         FileLogger.log(this, "GuardService: onCreate")
@@ -70,7 +73,7 @@ class GuardService : LifecycleService() {
                 stopGuard()
             }
             ACTION_ARM -> {
-                startGuardFromRemote()
+                startGuard()
             }
             else -> {
                 // ⚠️ Старт службы — только бот. Охрана НЕ включается.
@@ -162,29 +165,46 @@ class GuardService : LifecycleService() {
     // ---------- Охрана ----------
 
     private fun startGuard() {
+        if (isRunning) return
+
+        FileLogger.log(this, "startGuard: imageCapture=$imageCapture")
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForegroundCompat(withCamera = true)
         }
-        FileLogger.log(this, "startGuard: охрана включается")
-        startCamera()
-        lifecycleScope.launch(Dispatchers.Main) {
-            delay(3000)
-            motionDetector?.sensitivity = 5
 
-            if (BotSettings.isSoundEnabled(this@GuardService)) {
-                soundDetector.thresholdDb = 70.0
-                soundDetector.start(lifecycleScope)
-                FileLogger.log(this@GuardService, "startGuard: звук ВКЛ")
-            } else {
-                soundDetector.thresholdDb = 200.0
-                soundDetector.stop()
-                FileLogger.log(this@GuardService, "startGuard: звук ОТКЛ")
+        if (imageCapture == null) {
+            // Камера не готова — создаём
+            FileLogger.log(this, "startGuard: камера не готова, создаём")
+            startCamera()
+
+            lifecycleScope.launch(Dispatchers.Main) {
+                delay(3000)   // ждём привязки
+                applyGuardThresholds()
+                isRunning = true
+                updateNotification("🟢 Охрана активна", "Слежу за движением")
             }
+        } else {
+            // Камера готова — только пороги
+            FileLogger.log(this, "startGuard: камера готова, пороги")
+            isRunning = true
+            applyGuardThresholds()
+            updateNotification("🟢 Охрана активна", "Слежу за движением")
         }
-        isRunning = true
-        updateNotification("🟢 Охрана активна", "Слежу за движением")
     }
-
+    private fun applyGuardThresholds() {
+        motionDetector?.sensitivity = 5
+        if (BotSettings.isSoundEnabled(this)) {
+            soundDetector.thresholdDb = 70.0
+            if (!soundDetector.isRunning) {
+                soundDetector.start(lifecycleScope)
+            }
+        } else {
+            soundDetector.thresholdDb = 200.0
+            soundDetector.stop()
+        }
+        FileLogger.log(this, "applyGuardThresholds: sensitivity=5")
+    }
     private fun startVkBot() {
         if (vkBot != null) return
 
@@ -204,7 +224,7 @@ class GuardService : LifecycleService() {
             onCommand = { cmd ->
                 lifecycleScope.launch(Dispatchers.Main) {
                     when (cmd) {
-                        "ARM" -> startGuardFromRemote()
+                        "ARM" -> startGuard()
                         "DISARM" -> stopGuard()
                         "PHOTO" -> takePhotoAndSend("📸 Снимок по запросу")
                         "STATUS" -> {
@@ -249,6 +269,24 @@ class GuardService : LifecycleService() {
                                 Notifier.send(this@GuardService, reply)
                             }
                         }
+                        "TOGGLE_CAMERA" -> {
+                            val isFront = BotSettings.toggleCamera(this@GuardService)
+                            FileLogger.log(this@GuardService, "камера переключена: ${if (isFront) "передняя" else "задняя"}")
+
+                            startCamera()
+
+                            if (isRunning) {
+                                lifecycleScope.launch(Dispatchers.Main) {
+                                    delay(3000)
+                                    applyGuardThresholds()
+                                }
+                            }
+
+                            val reply = if (isFront) "📷 Камера: передняя" else "📷 Камера: задняя"
+                            lifecycleScope.launch(Dispatchers.IO) {
+                                Notifier.send(this@GuardService, reply)
+                            }
+                        }
                     }
                 }
             },
@@ -280,37 +318,31 @@ class GuardService : LifecycleService() {
         stopSelf()
     }
 
-    private fun startGuardFromRemote() {
-        if (isRunning) return
-        isRunning = true
-
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            startForegroundCompat(withCamera = true)
-        }
-
-        if (soundDetector.isRunning && imageCapture != null) {
-            soundDetector.thresholdDb = 70.0
-            motionDetector?.sensitivity = 5
-            FileLogger.log(this, "охрана поставлена, пороги восстановлены")
-        } else {
-            startGuard()
-            FileLogger.log(this, "охрана поставлена, полный рестарт")
-        }
-
-        updateNotification("🟢 Охрана активна", "Слежу за движением и звуком")
-    }
-
     private var imageCapture: ImageCapture? = null
     private var motionDetector: MotionDetector? = null
 
     private fun startCamera() {
+        if (!cameraInProgress.compareAndSet(false, true)) {
+            FileLogger.log(this, "startCamera: уже в процессе, пропускаем")
+            return
+        }
+
+        cameraProvider?.unbindAll()
+        imageCapture = null
+        motionDetector = null
+
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
             try {
                 val provider = providerFuture.get()
                 cameraProvider = provider
 
-                // ⚠️ sensitivity = 100 (по умолчанию отключено)
+                val selector = if (BotSettings.isFrontCamera(this)) {
+                    CameraSelector.DEFAULT_FRONT_CAMERA
+                } else {
+                    CameraSelector.DEFAULT_BACK_CAMERA
+                }
+
                 motionDetector = MotionDetector(sensitivity = 100) {
                     onAlarm("🎥 Обнаружено движение!")
                 }
@@ -329,23 +361,31 @@ class GuardService : LifecycleService() {
                     .setJpegQuality(70)
                     .build()
 
-                provider.unbindAll()
                 provider.bindToLifecycle(
                     this,
-                    CameraSelector.DEFAULT_BACK_CAMERA,
+                    selector,
                     analysis,
                     imageCapture
                 )
 
-                FileLogger.log(this, "камера привязана, motionDetector=$motionDetector")
+                val camName = if (BotSettings.isFrontCamera(this)) "front" else "back"
+                FileLogger.log(this, "камера привязана ($camName), motionDetector=$motionDetector")
             } catch (e: Exception) {
-                e.printStackTrace()
                 FileLogger.log(this, "ошибка камеры: ${e.message}")
+            } finally {
+                cameraInProgress.set(false)
             }
         }, ContextCompat.getMainExecutor(this))
     }
 
     private fun takePhotoAndSend(reason: String) {
+        val now = System.currentTimeMillis()
+        if (now - lastPhotoTime < photoCooldownMs) {
+            FileLogger.log(this, "takePhotoAndSend: кулдаун, игнорируем")
+            return
+        }
+        lastPhotoTime = now
+        FileLogger.log(this, "takePhotoAndSend: START, reason=$reason")
         val capture = imageCapture
         if (capture == null) {
             FileLogger.log(this, "imageCapture == null, пропускаем фото")
@@ -355,7 +395,7 @@ class GuardService : LifecycleService() {
         val photoDir = File(cacheDir, "photos").apply { mkdirs() }
         val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(java.util.Date())
         val photoFile = File(photoDir, "alarm_$timestamp.jpg")
-
+        FileLogger.log(this, "takePhotoAndSend: файл $timestamp")
         val outputOptions = ImageCapture.OutputFileOptions.Builder(photoFile).build()
 
         capture.takePicture(
@@ -363,7 +403,7 @@ class GuardService : LifecycleService() {
             ContextCompat.getMainExecutor(this),
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
-                    FileLogger.log(this@GuardService, "фото сохранено")
+                    FileLogger.log(this@GuardService, "onImageSaved: ${photoFile.name}")
                     lifecycleScope.launch(Dispatchers.IO) {
                         try {
                             val attachment = VkPhotoUploader.uploadAndGetAttachment(this@GuardService, photoFile)
@@ -385,7 +425,7 @@ class GuardService : LifecycleService() {
                 }
 
                 override fun onError(exception: ImageCaptureException) {
-                    FileLogger.log(this@GuardService, "takePicture error ${exception.message}")
+                    FileLogger.log(this@GuardService, "onError: ${exception.message}")
                     lifecycleScope.launch(Dispatchers.IO) {
                         Notifier.send(this@GuardService, "🚨 ТРЕВОГА!\n$reason\n(фото не удалось снять)")
                     }

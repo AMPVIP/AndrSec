@@ -41,4 +41,18 @@ object BotSettings {
         setSoundEnabled(ctx, newValue)
         return newValue
     }
+    private const val KEY_CAMERA_FRONT = "camera_front"
+
+    fun isFrontCamera(ctx: Context): Boolean =
+        prefs(ctx).getBoolean(KEY_CAMERA_FRONT, false)   // по умолчанию — задняя
+
+    fun setFrontCamera(ctx: Context, front: Boolean) {
+        prefs(ctx).edit().putBoolean(KEY_CAMERA_FRONT, front).apply()
+    }
+
+    fun toggleCamera(ctx: Context): Boolean {
+        val newValue = !isFrontCamera(ctx)
+        setFrontCamera(ctx, newValue)
+        return newValue
+    }
 }
