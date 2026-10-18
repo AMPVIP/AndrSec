@@ -76,17 +76,14 @@ class GuardService : LifecycleService() {
                 startGuard()
             }
             else -> {
-                // ⚠️ Старт службы — только бот. Охрана НЕ включается.
-                startForegroundCompat(withCamera = false)
+                startForegroundCompat(withCamera = false)   // только микрофон
                 startVkBot()
-                startCamera()
+                soundDetector.start(lifecycleScope)         // микрофон всегда
 
-                // Через 3 сек — выставить пороги «выключено»
                 lifecycleScope.launch(Dispatchers.Main) {
                     delay(3000)
-                    motionDetector?.sensitivity = 100
                     soundDetector.thresholdDb = 200.0
-                    FileLogger.log(this@GuardService, "служба запущена, пороги максимальные")
+                    FileLogger.log(this@GuardService, "служба запущена, микрофон активен (200 dB)")
                 }
             }
         }
@@ -105,10 +102,9 @@ class GuardService : LifecycleService() {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_CAMERA or
                             ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 } else {
-                    ServiceInfo.FOREGROUND_SERVICE_TYPE_DATA_SYNC
+                    ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 }
-                startForeground(NOTIF_ID, notification, types)
-                println("GuardService: startForeground OK, withCamera=$withCamera")
+                    startForeground(NOTIF_ID, notification, types)
             } else {
                 startForeground(NOTIF_ID, notification)
             }
@@ -169,24 +165,20 @@ class GuardService : LifecycleService() {
 
         FileLogger.log(this, "startGuard: imageCapture=$imageCapture")
 
+        // Переключаем FGS на camera|microphone
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForegroundCompat(withCamera = true)
         }
 
         if (imageCapture == null) {
-            // Камера не готова — создаём
-            FileLogger.log(this, "startGuard: камера не готова, создаём")
             startCamera()
-
             lifecycleScope.launch(Dispatchers.Main) {
-                delay(3000)   // ждём привязки
+                delay(3000)
                 applyGuardThresholds()
                 isRunning = true
                 updateNotification("🟢 Охрана активна", "Слежу за движением")
             }
         } else {
-            // Камера готова — только пороги
-            FileLogger.log(this, "startGuard: камера готова, пороги")
             isRunning = true
             applyGuardThresholds()
             updateNotification("🟢 Охрана активна", "Слежу за движением")
@@ -201,7 +193,6 @@ class GuardService : LifecycleService() {
             }
         } else {
             soundDetector.thresholdDb = 200.0
-            soundDetector.stop()
         }
         FileLogger.log(this, "applyGuardThresholds: sensitivity=5")
     }
@@ -259,7 +250,6 @@ class GuardService : LifecycleService() {
                                     FileLogger.log(this@GuardService, "звук включён (70 dB)")
                                 } else {
                                     soundDetector.thresholdDb = 200.0
-                                    soundDetector.stop()
                                     FileLogger.log(this@GuardService, "звук отключён (200 dB)")
                                 }
                             }
@@ -298,13 +288,19 @@ class GuardService : LifecycleService() {
 
     private fun stopGuard() {
         soundDetector.thresholdDb = 200.0
-        motionDetector?.sensitivity = 100
 
+        // Отвязываем камеру
+        cameraProvider?.unbindAll()
+        imageCapture = null
+        motionDetector = null
+
+        // Переключаем FGS на microphone
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForegroundCompat(withCamera = false)
         }
+
         isRunning = false
-        FileLogger.log(this, "stopGuard: охрана снята, sensitivity=100, thresholdDb=200")
+        FileLogger.log(this, "stopGuard: охрана снята, камера отвязана, микрофон 200 dB")
         updateNotification("⚪ Охрана снята", "Бот слушает команды")
     }
 
@@ -385,7 +381,22 @@ class GuardService : LifecycleService() {
             return
         }
         lastPhotoTime = now
-        FileLogger.log(this, "takePhotoAndSend: START, reason=$reason")
+
+        // ⚠️ Если камера не привязана — привязываем
+        if (imageCapture == null) {
+            FileLogger.log(this, "takePhotoAndSend: камера не привязана, привязываем")
+            startCamera()
+
+            lifecycleScope.launch(Dispatchers.Main) {
+                delay(3000)
+                takePhotoAndSendInternal(reason)
+            }
+            return
+        }
+
+        takePhotoAndSendInternal(reason)
+    }
+    private fun takePhotoAndSendInternal(reason: String) {
         val capture = imageCapture
         if (capture == null) {
             FileLogger.log(this, "imageCapture == null, пропускаем фото")
@@ -420,6 +431,15 @@ class GuardService : LifecycleService() {
                             Notifier.send(this@GuardService, "🚨 ТРЕВОГА!\n$reason\n(ошибка загрузки фото)")
                         } finally {
                             photoFile.delete()
+                            if (!isRunning) {
+                                lifecycleScope.launch(Dispatchers.Main) {
+                                    delay(1000)   // ждём завершения takePicture
+                                    cameraProvider?.unbindAll()
+                                    imageCapture = null
+                                    motionDetector = null
+                                    FileLogger.log(this@GuardService, "камера отвязана после снимка (охрана снята)")
+                                }
+                            }
                         }
                     }
                 }
