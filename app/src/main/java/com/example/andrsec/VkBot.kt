@@ -210,7 +210,6 @@ class VkBot(
             }
         }
     }
-
     // ---------- Отправка сообщения ----------
 
     fun sendMessage(peerId: Long, text: String) {
