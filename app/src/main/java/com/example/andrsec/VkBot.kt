@@ -191,7 +191,6 @@ class VkBot(
                 onCommand("BATTERY")
                 // Ответ придёт из GuardService — не отправляем здесь
             }
-
             text == "помощь" || text == "help" -> {
                 sendMessage(peerId, """
         📋 Команды:
@@ -211,7 +210,6 @@ class VkBot(
         }
     }
     // ---------- Отправка сообщения ----------
-
     fun sendMessage(peerId: Long, text: String) {
         val url = "https://api.vk.com/method/messages.send"
         val body = FormBody.Builder()
