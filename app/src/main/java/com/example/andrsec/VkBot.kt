@@ -191,6 +191,7 @@ class VkBot(
                 onCommand("BATTERY")
                 // Ответ придёт из GuardService — не отправляем здесь
             }
+
             text == "помощь" || text == "help" -> {
                 sendMessage(peerId, """
         📋 Команды:

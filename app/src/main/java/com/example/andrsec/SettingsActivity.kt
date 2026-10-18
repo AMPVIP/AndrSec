@@ -11,7 +11,6 @@ class SettingsActivity : AppCompatActivity() {
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
-
         val tokenInput = findViewById<EditText>(R.id.tokenInput)
         val groupIdInput = findViewById<EditText>(R.id.groupIdInput)
         val peerIdInput = findViewById<EditText>(R.id.peerIdInput)

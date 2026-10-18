@@ -14,6 +14,7 @@ class SoundDetector(
     var isRunning: Boolean = false
         private set
     private var job: Job? = null
+
     private var lastTriggerTime = 0L
     private val sampleRate = 44100
 

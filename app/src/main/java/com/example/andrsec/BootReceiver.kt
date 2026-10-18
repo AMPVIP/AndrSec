@@ -9,9 +9,6 @@ class BootReceiver : BroadcastReceiver() {
     override fun onReceive(context: Context, intent: Intent) {
         if (intent.action != Intent.ACTION_BOOT_COMPLETED) return
 
-        // 1. Watchdog (если добавишь)
-        // WatchdogReceiver.scheduleNext(context)
-
         val prefs = context.getSharedPreferences("guard_prefs", Context.MODE_PRIVATE)
         val wasArmed = prefs.getBoolean("armed", false)
 

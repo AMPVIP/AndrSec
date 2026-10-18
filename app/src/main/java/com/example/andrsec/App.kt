@@ -22,7 +22,6 @@ class App : Application() {
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.O) {
             // Явно указываем тип — Context.NOTIFICATION_SERVICE
             val nm = getSystemService(Context.NOTIFICATION_SERVICE) as NotificationManager
-
             val serviceChannel = NotificationChannel(
                 CHANNEL_ID,
                 "Охрана (фоновая служба)",

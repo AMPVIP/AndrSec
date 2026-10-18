@@ -46,6 +46,7 @@ object BotSettings {
     fun isFrontCamera(ctx: Context): Boolean =
         prefs(ctx).getBoolean(KEY_CAMERA_FRONT, false)   // по умолчанию — задняя
 
+
     fun setFrontCamera(ctx: Context, front: Boolean) {
         prefs(ctx).edit().putBoolean(KEY_CAMERA_FRONT, front).apply()
     }

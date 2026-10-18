@@ -57,7 +57,6 @@ class MotionDetector(
         }
         val percent = changed * 100 / total
 
-        // Копируем текущий кадр в prev для следующей итерации
         System.arraycopy(gray, 0, prev, 0, gray.size)
 
         // Логируем только TRIGGER (не спамим)

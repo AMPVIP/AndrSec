@@ -73,7 +73,6 @@ class MainActivity : AppCompatActivity() {
 
         batteryBtn.setOnClickListener { requestIgnoreBatteryOptimizations() }
     }
-
     private fun startWatchdog() {
         val workRequest = PeriodicWorkRequestBuilder<WatchdogWorker>(
             5, java.util.concurrent.TimeUnit.MINUTES

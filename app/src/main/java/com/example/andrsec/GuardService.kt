@@ -262,7 +262,6 @@ class GuardService : LifecycleService() {
                         "TOGGLE_CAMERA" -> {
                             val isFront = BotSettings.toggleCamera(this@GuardService)
                             FileLogger.log(this@GuardService, "камера переключена: ${if (isFront) "передняя" else "задняя"}")
-
                             startCamera()
 
                             if (isRunning) {

@@ -179,6 +179,7 @@ object VkPhotoUploader {
             client.newCall(req).execute().use { resp ->
                 resp.body?.string()
             }
+
         } catch (e: IOException) {
             println("VkPhotoUploader: savePhoto IOException ${e.message}")
             null
