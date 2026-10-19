@@ -5,7 +5,8 @@ import androidx.camera.core.ImageProxy
 
 class MotionDetector(
     var sensitivity: Int = 100,
-    private val cooldownMs: Long = 10_000,
+    private val cooldownMs: Int = 10_000,
+    private val frameSkip: Int = 1,
     private val onMotion: () -> Unit
 ) : ImageAnalysis.Analyzer {
 
@@ -14,12 +15,16 @@ class MotionDetector(
     private var prevGray: ByteArray? = null
     private var lastWidth = 0
     private var lastHeight = 0
-
+    private var frameCount = 0L
     private var lastTrigger = 0L
 
     override fun analyze(image: ImageProxy) {
         val w = image.width
         val h = image.height
+        if (frameCount++ % frameSkip != 0L) {
+            image.close()
+            return
+        }
 
         // Пересоздаём буферы ТОЛЬКО при смене разрешения
         if (grayBuffer == null || lastWidth != w || lastHeight != h) {

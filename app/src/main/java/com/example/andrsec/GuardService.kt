@@ -9,7 +9,6 @@ import android.os.IBinder
 import android.os.PowerManager
 import androidx.camera.core.*
 import androidx.camera.lifecycle.ProcessCameraProvider
-import androidx.camera.view.PreviewView
 import androidx.core.app.NotificationCompat
 import androidx.core.content.ContextCompat
 import androidx.lifecycle.LifecycleService
@@ -23,7 +22,8 @@ import androidx.camera.core.ImageCapture
 import androidx.camera.core.ImageCaptureException
 import java.text.SimpleDateFormat
 import kotlinx.coroutines.delay
-import java.util.concurrent.atomic.AtomicBoolean
+import com.example.andrsec.BotSettings.motionSensitivity
+import com.example.andrsec.BotSettings.frameSkip
 
 class GuardService : LifecycleService() {
 
@@ -185,7 +185,7 @@ class GuardService : LifecycleService() {
         }
     }
     private fun applyGuardThresholds() {
-        motionDetector?.sensitivity = 5
+        motionDetector?.sensitivity = this.motionSensitivity()
         if (BotSettings.isSoundEnabled(this)) {
             soundDetector.thresholdDb = 70.0
             if (!soundDetector.isRunning) {
@@ -317,15 +317,13 @@ class GuardService : LifecycleService() {
     private var motionDetector: MotionDetector? = null
 
     private fun startCamera() {
-        if (!cameraInProgress.compareAndSet(false, true)) {
-            FileLogger.log(this, "startCamera: уже в процессе, пропускаем")
-            return
-        }
+        if (!cameraInProgress.compareAndSet(false, true)) return
 
         cameraProvider?.unbindAll()
         imageCapture = null
         motionDetector = null
 
+        val frameSkip = this.frameSkip()
         val providerFuture = ProcessCameraProvider.getInstance(this)
         providerFuture.addListener({
             try {
@@ -338,7 +336,10 @@ class GuardService : LifecycleService() {
                     CameraSelector.DEFAULT_BACK_CAMERA
                 }
 
-                motionDetector = MotionDetector(sensitivity = 100) {
+                motionDetector = MotionDetector(
+                    sensitivity = 100,
+                    frameSkip = frameSkip
+                ) {
                     onAlarm("🎥 Обнаружено движение!")
                 }
 
@@ -356,15 +357,10 @@ class GuardService : LifecycleService() {
                     .setJpegQuality(70)
                     .build()
 
-                provider.bindToLifecycle(
-                    this,
-                    selector,
-                    analysis,
-                    imageCapture
-                )
+                provider.bindToLifecycle(this, selector, analysis, imageCapture)
 
                 val camName = if (BotSettings.isFrontCamera(this)) "front" else "back"
-                FileLogger.log(this, "камера привязана ($camName), motionDetector=$motionDetector")
+                FileLogger.log(this, "камера привязана ($camName), frameSkip=\$frameSkip")
             } catch (e: Exception) {
                 FileLogger.log(this, "ошибка камеры: ${e.message}")
             } finally {
@@ -414,6 +410,16 @@ class GuardService : LifecycleService() {
             object : ImageCapture.OnImageSavedCallback {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
                     FileLogger.log(this@GuardService, "onImageSaved: ${photoFile.name}")
+
+                    // ⚠️ Отвязываем камеру СРАЗУ после снимка (если охрана снята)
+                    if (!isRunning) {
+                        cameraProvider?.unbindAll()
+                        imageCapture = null
+                        motionDetector = null
+                        FileLogger.log(this@GuardService, "камера отвязана сразу после снимка")
+                    }
+
+                    // Upload в VK — в фоне, не блокирует камеру
                     lifecycleScope.launch(Dispatchers.IO) {
                         try {
                             val attachment = VkPhotoUploader.uploadAndGetAttachment(this@GuardService, photoFile)
@@ -430,15 +436,6 @@ class GuardService : LifecycleService() {
                             Notifier.send(this@GuardService, "🚨 ТРЕВОГА!\n$reason\n(ошибка загрузки фото)")
                         } finally {
                             photoFile.delete()
-                            if (!isRunning) {
-                                lifecycleScope.launch(Dispatchers.Main) {
-                                    delay(1000)   // ждём завершения takePicture
-                                    cameraProvider?.unbindAll()
-                                    imageCapture = null
-                                    motionDetector = null
-                                    FileLogger.log(this@GuardService, "камера отвязана после снимка (охрана снята)")
-                                }
-                            }
                         }
                     }
                 }

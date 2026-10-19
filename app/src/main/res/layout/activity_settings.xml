@@ -61,6 +61,51 @@
             android:hint="16004466"
             android:inputType="number"
             android:maxLines="1"/>
+        <!-- Sensitivity -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="🎯 Игнор движения(рек 5)"
+            android:textSize="14sp"/>
+
+        <TextView
+            android:id="@+id/sensitivityValue"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="5"
+            android:textStyle="bold"
+            android:textSize="14sp"/>
+
+        <SeekBar
+            android:id="@+id/sensitivitySeek"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="100"
+            android:progress="5"/>
+
+        <!-- FPS -->
+        <TextView
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:layout_marginTop="16dp"
+            android:text="📷 Обработка кадров (1 = все, 30 = каждый 30-й)"
+            android:textSize="14sp"/>
+
+        <TextView
+            android:id="@+id/frameSkipValue"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:text="Каждый 1-й кадр (~30 fps)"
+            android:textStyle="bold"
+            android:textSize="14sp"/>
+
+        <SeekBar
+            android:id="@+id/frameSkipSeek"
+            android:layout_width="match_parent"
+            android:layout_height="wrap_content"
+            android:max="29"
+            android:progress="0"/>
 
         <Button
             android:id="@+id/saveBtn"
