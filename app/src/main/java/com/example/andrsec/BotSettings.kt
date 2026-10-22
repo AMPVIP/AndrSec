@@ -99,4 +99,19 @@ object BotSettings {
             .putInt(KEY_FRAME_SKIP, safeValue)
             .apply()
     }
+    // ---------- Тип медиа при тревоге ----------
+
+    private const val KEY_ALARM_MEDIA = "alarm_media"   // "photo" | "video"
+    const val MEDIA_PHOTO = "photo"
+    const val MEDIA_VIDEO = "video"
+
+    fun getAlarmMedia(ctx: Context): String =
+        prefs(ctx).getString(KEY_ALARM_MEDIA, MEDIA_PHOTO) ?: MEDIA_PHOTO
+
+    fun setAlarmMedia(ctx: Context, value: String) {
+        val safe = if (value == MEDIA_VIDEO) MEDIA_VIDEO else MEDIA_PHOTO
+        prefs(ctx).edit().putString(KEY_ALARM_MEDIA, safe).apply()
+    }
+
+    fun isAlarmVideo(ctx: Context): Boolean = getAlarmMedia(ctx) == MEDIA_VIDEO
 }

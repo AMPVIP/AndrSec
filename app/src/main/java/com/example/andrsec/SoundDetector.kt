@@ -1,12 +1,12 @@
 package com.example.andrsec
-// SoundDetector.kt
+
 import android.media.AudioFormat
 import android.media.AudioRecord
 import android.media.MediaRecorder
 import kotlinx.coroutines.*
 
 class SoundDetector(
-    var thresholdDb: Double = 70.0,
+    @Volatile var thresholdDb: Double = 70.0,
     private val cooldownMs: Long = 10_000,
     private val onSoundDetected: (Double) -> Unit
 ) {
@@ -26,6 +26,11 @@ class SoundDetector(
             AudioFormat.CHANNEL_IN_MONO,
             AudioFormat.ENCODING_PCM_16BIT
         )
+        if (minBuf <= 0) {
+            println("SoundDetector: getMinBufferSize failed ($minBuf)")
+            isRunning = false
+            return
+        }
         val recorder = AudioRecord(
             MediaRecorder.AudioSource.MIC,
             sampleRate,
@@ -33,6 +38,13 @@ class SoundDetector(
             AudioFormat.ENCODING_PCM_16BIT,
             minBuf
         )
+        if (recorder.state != AudioRecord.STATE_INITIALIZED) {
+            println("SoundDetector: AudioRecord not initialized")
+            recorder.release()
+            isRunning = false
+            return
+        }
+
         val buffer = ShortArray(minBuf)
 
         job = scope.launch(Dispatchers.IO) {
@@ -50,7 +62,7 @@ class SoundDetector(
                         val db = 20 * kotlin.math.log10(rms.coerceAtLeast(1e-9)) + 94
                         if (db > thresholdDb) {
                             val now = System.currentTimeMillis()
-                            if (now - lastTriggerTime > cooldownMs) {   // ← кулдаун
+                            if (now - lastTriggerTime > cooldownMs) {
                                 lastTriggerTime = now
                                 println("SoundDetector: trigger db=$db")
                                 withContext(Dispatchers.Main) { onSoundDetected(db) }
@@ -59,7 +71,7 @@ class SoundDetector(
                     }
                 }
             } finally {
-                recorder.stop()
+                try { recorder.stop() } catch (_: Exception) {}
                 recorder.release()
             }
         }
@@ -67,7 +79,11 @@ class SoundDetector(
 
     fun stop() {
         isRunning = false
-        job?.cancel()
+        val oldJob = job
         job = null
+        if (oldJob != null) {
+            // ⚠️ Ждём освобождения AudioRecord, иначе следующий start() упадёт
+            runBlocking { oldJob.cancelAndJoin() }
+        }
     }
 }
