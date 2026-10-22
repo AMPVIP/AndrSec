@@ -19,10 +19,6 @@ object VkPhotoUploader {
         .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
-    /**
-     * Возвращает строку вида "photo-241543229_457239018"
-     * или null, если что-то пошло не так.
-     */
     suspend fun uploadAndGetAttachment(
         context: Context,
         photoFile: File,
@@ -63,7 +59,14 @@ object VkPhotoUploader {
                 return@repeat
             }
 
-            val uploadJson = JSONObject(uploadResponse)
+            val uploadJson = try {
+                JSONObject(uploadResponse)
+            } catch (e: Exception) {
+                println("VkPhotoUploader: bad upload json: ${uploadResponse.take(100)}")
+                delay(500)
+                return@repeat
+            }
+
             val server = uploadJson.optInt("server", -1)
             val photo = uploadJson.optString("photo", "")
             val hash = uploadJson.optString("hash", "")
@@ -85,7 +88,14 @@ object VkPhotoUploader {
                 return@repeat
             }
 
-            val saveJson = JSONObject(saveResponse)
+            val saveJson = try {
+                JSONObject(saveResponse)
+            } catch (e: Exception) {
+                println("VkPhotoUploader: bad save json: ${saveResponse.take(100)}")
+                delay(500)
+                return@repeat
+            }
+
             if (saveJson.has("error")) {
                 val errMsg = saveJson.getJSONObject("error").optString("error_msg", "unknown")
                 println("VkPhotoUploader: save error: $errMsg")
@@ -120,8 +130,15 @@ object VkPhotoUploader {
         val req = Request.Builder().url(url).build()
         return try {
             client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    println("VkPhotoUploader: getUploadUrl HTTP ${resp.code}")
+                    return null
+                }
                 val body = resp.body?.string() ?: return null
-                val json = JSONObject(body)
+                val json = try { JSONObject(body) } catch (e: Exception) {
+                    println("VkPhotoUploader: getUploadUrl bad json: ${body.take(100)}")
+                    return null
+                }
                 if (json.has("error")) {
                     val errMsg = json.getJSONObject("error").optString("error_msg", "unknown")
                     val errCode = json.getJSONObject("error").optInt("error_code", -1)
@@ -130,11 +147,8 @@ object VkPhotoUploader {
                 }
                 json.getJSONObject("response").getString("upload_url")
             }
-        } catch (e: IOException) {
-            println("VkPhotoUploader: getUploadUrl IOException ${e.message}")
-            null
         } catch (e: Exception) {
-            println("VkPhotoUploader: getUploadUrl exception ${e.javaClass.simpleName}: ${e.message}")
+            println("VkPhotoUploader: getUploadUrl ${e.javaClass.simpleName}: ${e.message}")
             null
         }
     }
@@ -154,10 +168,14 @@ object VkPhotoUploader {
         val req = Request.Builder().url(uploadUrl).post(requestBody).build()
         return try {
             client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    println("VkPhotoUploader: uploadFile HTTP ${resp.code}")
+                    return null
+                }
                 resp.body?.string()
             }
-        } catch (e: IOException) {
-            println("VkPhotoUploader: uploadFile IOException ${e.message}")
+        } catch (e: Exception) {
+            println("VkPhotoUploader: uploadFile ${e.javaClass.simpleName}: ${e.message}")
             null
         }
     }
@@ -177,11 +195,14 @@ object VkPhotoUploader {
         val req = Request.Builder().url(url).post(body).build()
         return try {
             client.newCall(req).execute().use { resp ->
+                if (!resp.isSuccessful) {
+                    println("VkPhotoUploader: savePhoto HTTP ${resp.code}")
+                    return null
+                }
                 resp.body?.string()
             }
-
-        } catch (e: IOException) {
-            println("VkPhotoUploader: savePhoto IOException ${e.message}")
+        } catch (e: Exception) {
+            println("VkPhotoUploader: savePhoto ${e.javaClass.simpleName}: ${e.message}")
             null
         }
     }

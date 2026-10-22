@@ -4,16 +4,19 @@ import kotlinx.coroutines.*
 import okhttp3.*
 import org.json.JSONObject
 import java.io.IOException
+import kotlin.coroutines.resume
+import kotlin.coroutines.resumeWithException
+import kotlinx.coroutines.suspendCancellableCoroutine
 
 class VkBot(
     private val token: String,
     private val groupId: Long,
-    private val allowedPeerId: Long,          // только этот peer_id может управлять
+    private val allowedPeerId: Long,
     private val onCommand: (String) -> Unit,
     private val onError: (String) -> Unit = {}
 ) {
     private val client = OkHttpClient.Builder()
-        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS) // long poll
+        .readTimeout(60, java.util.concurrent.TimeUnit.SECONDS)
         .build()
 
     private var server: String = ""
@@ -33,24 +36,26 @@ class VkBot(
                     if (!initLongPoll()) {
                         println("VkBot: initLongPoll failed, retry in 10s")
                         delay(10_000)
-                        continue   // ← не выходим, а пробуем снова
+                        continue
                     }
                     println("VkBot: Long Poll initialized OK")
 
-                    // Внутренний цикл — пока сессия жива
                     while (running && isActive) {
                         try {
                             pollOnce()
+                        } catch (e: CancellationException) {
+                            throw e
                         } catch (e: Exception) {
                             println("VkBot: pollOnce exception ${e.javaClass.simpleName}: ${e.message}")
                             delay(3000)
-                            break   // ← выходим из внутреннего цикла, переинициализация
+                            break
                         }
                     }
+                } catch (e: CancellationException) {
+                    throw e
                 } catch (e: Exception) {
                     println("VkBot: outer exception ${e.javaClass.simpleName}: ${e.message}")
                     delay(5000)
-                    // не выходим — продолжаем цикл
                 }
             }
             println("VkBot: poll loop ended")
@@ -92,20 +97,43 @@ class VkBot(
             }
         } catch (e: Exception) {
             println("VkBot: initLongPoll exception ${e.javaClass.simpleName}: ${e.message}")
-            e.printStackTrace()
             onError("Network: ${e.message}")
             false
         }
     }
+
+    // ---------- Асинхронный execute с отменой ----------
+
+    private suspend fun executeAsync(req: Request): Response =
+        suspendCancellableCoroutine { cont ->
+            val call = client.newCall(req)
+            cont.invokeOnCancellation { call.cancel() }
+            call.enqueue(object : Callback {
+                override fun onFailure(call: Call, e: IOException) {
+                    if (cont.isActive) {
+                        cont.resumeWithException(e)
+                    }
+                }
+
+                override fun onResponse(call: Call, response: Response) {
+                    if (cont.isActive) {
+                        cont.resume(response)
+                    } else {
+                        response.close()
+                    }
+                }
+            })
+        }
 
     // ---------- Long Poll one iteration ----------
 
     private suspend fun pollOnce() {
         val url = "$server?act=a_check&key=$key&ts=$ts&wait=25"
         val req = Request.Builder().url(url).build()
-        client.newCall(req).execute().use { resp ->
-            val bodyStr = resp.body?.string()
 
+        val resp = executeAsync(req)
+        try {
+            val bodyStr = resp.body?.string()
             if (bodyStr.isNullOrEmpty()) return
             val json = JSONObject(bodyStr)
 
@@ -113,24 +141,16 @@ class VkBot(
                 val failed = json.getInt("failed")
                 println("VkBot: Long Poll failed=$failed")
                 when (failed) {
-                    1 -> {
-                        // ts устарел — обновить
-                        ts = json.getString("ts")
-                    }
+                    1 -> ts = json.getString("ts")
                     2, 3 -> {
-                        // key/server устарели — полная переинициализация
                         ts = ""; key = ""; server = ""
                         initLongPoll()
                     }
                     4 -> {
-                        // Лимит запросов — подождать
                         delay(5000)
                         initLongPoll()
                     }
-                    else -> {
-                        // Неизвестный код — переинициализация
-                        initLongPoll()
-                    }
+                    else -> initLongPoll()
                 }
                 return
             }
@@ -138,7 +158,6 @@ class VkBot(
             ts = json.getString("ts")
             val updates = json.optJSONArray("updates") ?: return
 
-            // Логируем только если есть события
             if (updates.length() > 0) {
                 println("VkBot: updates count=${updates.length()}, ts=$ts")
             }
@@ -146,6 +165,8 @@ class VkBot(
             for (i in 0 until updates.length()) {
                 handleUpdate(updates.getJSONObject(i))
             }
+        } finally {
+            resp.close()
         }
     }
 
@@ -156,60 +177,65 @@ class VkBot(
 
         val obj = update.getJSONObject("object")
         val message = obj.getJSONObject("message")
+
+        if (message.optInt("out", 0) == 1) return
+
         val peerId = message.getLong("peer_id")
         val text = message.optString("text", "").trim().lowercase()
 
-        // Фильтр: только твой peer_id может управлять
         if (peerId != allowedPeerId) {
             sendMessage(peerId, "⛔ У вас нет прав управлять этой системой.")
             return
         }
 
         when {
-            text.startsWith("камера") || text == "camera" -> {
-                onCommand("TOGGLE_CAMERA")
-            }
-            text.startsWith("звук") || text == "sound" -> {
-                onCommand("TOGGLE_SOUND")
+            text.startsWith("камера") || text == "camera" -> onCommand("TOGGLE_CAMERA")
+            text.startsWith("звук") || text == "sound" -> onCommand("TOGGLE_SOUND")
+
+            text.contains("выкл") || text == "off" -> {
+                onCommand("DISARM")
+                sendMessage(peerId, "⚪ Охрана снята")
             }
             text.contains("вкл") || text == "on" -> {
                 onCommand("ARM")
                 sendMessage(peerId, "🟢 Охрана поставлена")
             }
-            text.contains("выкл") || text == "off" -> {
-                onCommand("DISARM")
-                sendMessage(peerId, "⚪ Охрана снята")
-            }
-            text.contains("статус") || text == "status" -> {
-                onCommand("STATUS")   // ← вместо старой логики
-            }
+
+            text.contains("статус") || text == "status" -> onCommand("STATUS")
+
             text.contains("фото") || text == "photo" -> {
                 sendMessage(peerId, "📸 Делаю снимок...")
                 onCommand("PHOTO")
             }
-            text.contains("батарея") || text == "battery" || text == "заряд" -> {
-                onCommand("BATTERY")
-                // Ответ придёт из GuardService — не отправляем здесь
+            text.contains("видео") || text == "video" -> {
+                sendMessage(peerId, "🎥 Записываю видео...")
+                onCommand("VIDEO")
             }
+
+            text.contains("батарея") || text == "battery" || text == "заряд" ->
+                onCommand("BATTERY")
+
             text == "помощь" || text == "help" -> {
                 sendMessage(peerId, """
-        📋 Команды:
-        • вкл/on — вкл охрану
-        • выкл/off — выкл охрану
-        • статус/status — текущее состояние
-        • фото/photo — снимок с камеры
-        • звук/sound — переключить тревогу по звуку
-        • камера/camera — переключить камеру (передняя/задняя)
-        • батарея/battery — уровень заряда
-        • помощь/help — этот список
-    """.trimIndent())
+                    📋 Команды:
+                    • вкл/on — вкл охрану
+                    • выкл/off — выкл охрану
+                    • статус/status — текущее состояние
+                    • фото/photo — снимок с камеры
+                    • видео/video — записать видео (10 сек)
+                    • звук/sound — переключить тревогу по звуку
+                    • камера/camera — переключить камеру (передняя/задняя)
+                    • батарея/battery — уровень заряда
+                    • помощь/help — этот список
+                """.trimIndent())
             }
-            else -> {
-                sendMessage(peerId, "Неизвестная команда. Напишите «помощь».")
-            }
+
+            else -> sendMessage(peerId, "Неизвестная команда. Напишите «помощь».")
         }
     }
+
     // ---------- Отправка сообщения ----------
+
     fun sendMessage(peerId: Long, text: String) {
         val url = "https://api.vk.com/method/messages.send"
         val body = FormBody.Builder()

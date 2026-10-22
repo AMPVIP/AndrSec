@@ -19,9 +19,6 @@ import kotlinx.coroutines.Dispatchers
 import kotlinx.coroutines.Job
 import kotlinx.coroutines.delay
 import kotlinx.coroutines.launch
-import androidx.work.ExistingPeriodicWorkPolicy
-import androidx.work.PeriodicWorkRequestBuilder
-import androidx.work.WorkManager
 
 class MainActivity : AppCompatActivity() {
 
@@ -29,7 +26,7 @@ class MainActivity : AppCompatActivity() {
     private lateinit var toggleBtn: Button
     private lateinit var batteryBtn: Button
     private var countdownJob: Job? = null
-    private var isCountingDown = false   // ← НОВОЕ
+    private var isCountingDown = false
 
     private val requiredPerms = buildList {
         add(Manifest.permission.CAMERA)
@@ -56,12 +53,10 @@ class MainActivity : AppCompatActivity() {
 
         FileLogger.log(this, "MainActivity: onCreate")
 
-        getSharedPreferences("guard_prefs", MODE_PRIVATE).edit()
-            .putBoolean("service_enabled", true)
-            .apply()
-
-        startServiceWithAction(GuardService.ACTION_START)
-        startWatchdog()
+        // Бот должен слушать команды всегда — поднимаем службу только если она ещё не жива
+        if (!GuardService.isServiceAlive) {
+            startServiceWithAction(GuardService.ACTION_START)
+        }
 
         toggleBtn.setOnClickListener {
             if (GuardService.isRunning) {
@@ -72,17 +67,6 @@ class MainActivity : AppCompatActivity() {
         }
 
         batteryBtn.setOnClickListener { requestIgnoreBatteryOptimizations() }
-    }
-    private fun startWatchdog() {
-        val workRequest = PeriodicWorkRequestBuilder<WatchdogWorker>(
-            5, java.util.concurrent.TimeUnit.MINUTES
-        ).build()
-        WorkManager.getInstance(this).enqueueUniquePeriodicWork(
-            "guard_watchdog",
-            ExistingPeriodicWorkPolicy.KEEP,
-            workRequest
-        )
-        FileLogger.log(this, "Watchdog: запланирован")
     }
 
     override fun onResume() {
@@ -109,17 +93,13 @@ class MainActivity : AppCompatActivity() {
         FileLogger.log(this, "startGuard: отсчёт 30 сек")
 
         countdownJob = lifecycleScope.launch(Dispatchers.Main) {
-            val total = 30
-            for (i in total downTo 1) {
+            for (i in 30 downTo 1) {
                 statusText.text = "⏳ Охрана через $i сек"
                 delay(1000)
             }
 
             FileLogger.log(this@MainActivity, "startGuard: отсчёт завершён → ACTION_ARM")
             startServiceWithAction(GuardService.ACTION_ARM)
-
-            getSharedPreferences("guard_prefs", MODE_PRIVATE).edit()
-                .putBoolean("armed", true).apply()
 
             isCountingDown = false
             toggleBtn.isEnabled = true
@@ -135,9 +115,6 @@ class MainActivity : AppCompatActivity() {
 
         startServiceWithAction(GuardService.ACTION_DISARM)
 
-        getSharedPreferences("guard_prefs", MODE_PRIVATE).edit()
-            .putBoolean("armed", false).apply()
-
         statusText.text = "⚪ Охрана снята (бот слушает)"
         toggleBtn.text = "Включить охрану"
     }
@@ -150,7 +127,6 @@ class MainActivity : AppCompatActivity() {
     }
 
     private fun refreshUi() {
-        // ⚠️ НЕ перезаписываем во время отсчёта
         if (isCountingDown) return
 
         if (GuardService.isRunning) {

@@ -11,14 +11,16 @@ import com.example.andrsec.BotSettings.motionSensitivity
 import com.example.andrsec.BotSettings.setMotionSensitivity
 import com.example.andrsec.BotSettings.frameSkip
 import com.example.andrsec.BotSettings.setFrameSkip
-
+import android.widget.RadioButton
+import android.widget.RadioGroup
 class SettingsActivity : AppCompatActivity() {
+
+    private val frameSkipValues = intArrayOf(1, 2, 4, 8)
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
         setContentView(R.layout.activity_settings)
 
-        // --- Поля ---
         val tokenInput = findViewById<EditText>(R.id.tokenInput)
         val groupIdInput = findViewById<EditText>(R.id.groupIdInput)
         val peerIdInput = findViewById<EditText>(R.id.peerIdInput)
@@ -35,10 +37,22 @@ class SettingsActivity : AppCompatActivity() {
         sensitivitySeek.progress = savedSensitivity.coerceIn(1, 100)
         sensitivityValue.text = savedSensitivity.toString()
 
+        // frameSkip — по массиву [1,2,4,8]
         val savedFrameSkip = this.frameSkip()
-        frameSkipSeek.progress = (savedFrameSkip - 1).coerceIn(0, 29)
-        updateFrameSkipText(frameSkipValue, savedFrameSkip)
+        val savedIdx = frameSkipValues.indexOf(savedFrameSkip).let { if (it < 0) 0 else it }
+        frameSkipSeek.max = frameSkipValues.size - 1
+        frameSkipSeek.progress = savedIdx
+        updateFrameSkipText(frameSkipValue, frameSkipValues[savedIdx])
+        // video or photo
+        val alarmMediaGroup = findViewById<RadioGroup>(R.id.alarmMediaGroup)
+        val alarmMediaPhoto = findViewById<RadioButton>(R.id.alarmMediaPhoto)
+        val alarmMediaVideo = findViewById<RadioButton>(R.id.alarmMediaVideo)
 
+        if (BotSettings.isAlarmVideo(this)) {
+            alarmMediaVideo.isChecked = true
+        } else {
+            alarmMediaPhoto.isChecked = true
+        }
         // --- Слушатель sensitivity ---
         sensitivitySeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
@@ -49,10 +63,10 @@ class SettingsActivity : AppCompatActivity() {
             override fun onStopTrackingTouch(seekBar: SeekBar?) {}
         })
 
-        // --- Слушатель frameSkip ---
+        // --- Слушатель frameSkip (по массиву) ---
         frameSkipSeek.setOnSeekBarChangeListener(object : SeekBar.OnSeekBarChangeListener {
             override fun onProgressChanged(seekBar: SeekBar?, progress: Int, fromUser: Boolean) {
-                val value = progress + 1
+                val value = frameSkipValues[progress.coerceIn(0, frameSkipValues.lastIndex)]
                 updateFrameSkipText(frameSkipValue, value)
             }
             override fun onStartTrackingTouch(seekBar: SeekBar?) {}
@@ -78,8 +92,14 @@ class SettingsActivity : AppCompatActivity() {
             }
 
             this.setMotionSensitivity(sensitivitySeek.progress.coerceIn(1, 100))
-            this.setFrameSkip(frameSkipSeek.progress + 1)
+            this.setFrameSkip(frameSkipValues[frameSkipSeek.progress.coerceIn(0, frameSkipValues.lastIndex)])
 
+            val mediaType = if (alarmMediaVideo.isChecked) {
+                BotSettings.MEDIA_VIDEO
+            } else {
+                BotSettings.MEDIA_PHOTO
+            }
+            BotSettings.setAlarmMedia(this, mediaType)
             BotSettings.save(this, token, groupId, peerId)
             Toast.makeText(this, "✅ Сохранено. Перезапустите охрану.", Toast.LENGTH_LONG).show()
             finish()
@@ -111,6 +131,6 @@ class SettingsActivity : AppCompatActivity() {
 
     private fun updateFrameSkipText(textView: TextView, frameSkip: Int) {
         val fps = 30 / frameSkip
-        textView.text = "Каждый $frameSkip-й кадр (~$fps fps)"
+        textView.text = "~$fps fps"
     }
 }

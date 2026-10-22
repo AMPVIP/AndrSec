@@ -15,6 +15,7 @@ import androidx.lifecycle.LifecycleService
 import androidx.lifecycle.lifecycleScope
 import kotlinx.coroutines.launch
 import java.util.concurrent.Executors
+import java.util.concurrent.ExecutorService
 import kotlinx.coroutines.Dispatchers
 import java.io.File
 import java.util.Locale
@@ -24,7 +25,14 @@ import java.text.SimpleDateFormat
 import kotlinx.coroutines.delay
 import com.example.andrsec.BotSettings.motionSensitivity
 import com.example.andrsec.BotSettings.frameSkip
-
+import androidx.camera.video.FileOutputOptions
+import androidx.camera.video.Quality
+import androidx.camera.video.QualitySelector
+import androidx.camera.video.Recorder
+import androidx.camera.video.Recording
+import androidx.camera.video.VideoCapture
+import androidx.camera.video.VideoRecordEvent
+import androidx.camera.video.FallbackStrategy
 class GuardService : LifecycleService() {
 
     companion object {
@@ -33,7 +41,8 @@ class GuardService : LifecycleService() {
         const val ACTION_STOP = "ACTION_STOP"
         const val ACTION_DISARM = "ACTION_DISARM"
         const val NOTIF_ID = 1001
-
+        const val ACTION_RECORD = "ACTION_RECORD"
+        private const val VIDEO_DURATION_MS = 10_000L   // 10 секунд
         @Volatile
         var isRunning = false
             private set
@@ -48,10 +57,15 @@ class GuardService : LifecycleService() {
     private var vkBot: VkBot? = null
     private var wakeLock: PowerManager.WakeLock? = null
     private var cameraProvider: ProcessCameraProvider? = null
-    private val cameraExecutor = Executors.newSingleThreadExecutor()
+    private var cameraExecutor: ExecutorService = Executors.newSingleThreadExecutor()
     private val cameraInProgress = java.util.concurrent.atomic.AtomicBoolean(false)
     private var lastPhotoTime = 0L
     private val photoCooldownMs = 2000L
+    @Volatile
+    private var videoCapture: VideoCapture<Recorder>? = null
+    private var currentRecording: Recording? = null
+    private val videoInProgress = java.util.concurrent.atomic.AtomicBoolean(false)
+
     override fun onCreate() {
         super.onCreate()
         FileLogger.log(this, "GuardService: onCreate")
@@ -76,18 +90,18 @@ class GuardService : LifecycleService() {
                 startGuard()
             }
             else -> {
-                startForegroundCompat(withCamera = false)   // только микрофон
-                startVkBot()
-                soundDetector.start(lifecycleScope)         // микрофон всегда
-
-                lifecycleScope.launch(Dispatchers.Main) {
-                    delay(3000)
-                    soundDetector.thresholdDb = 200.0
-                    FileLogger.log(this@GuardService, "служба запущена, микрофон активен (200 dB)")
+                // ⚠️ Не трогаем FGS-тип, если охрана уже активна — иначе отвалится камера
+                if (!isRunning) {
+                    startForegroundCompat(withCamera = false)
                 }
+                startVkBot()
+                // Запускаем микрофон ВСЕГДА при старте службы (для «якоря» и прослушки)
+                soundDetector.thresholdDb = if (isRunning && BotSettings.isSoundEnabled(this)) 70.0 else 200.0
+                soundDetector.start(lifecycleScope)
+                FileLogger.log(this@GuardService, "onStartCommand: микрофон запущен при старте, порог=${soundDetector.thresholdDb}")
             }
         }
-        return START_STICKY
+        return START_NOT_STICKY
     }
 
     private fun startForegroundCompat(withCamera: Boolean = false) {
@@ -104,7 +118,7 @@ class GuardService : LifecycleService() {
                 } else {
                     ServiceInfo.FOREGROUND_SERVICE_TYPE_MICROPHONE
                 }
-                    startForeground(NOTIF_ID, notification, types)
+                startForeground(NOTIF_ID, notification, types)
             } else {
                 startForeground(NOTIF_ID, notification)
             }
@@ -165,7 +179,6 @@ class GuardService : LifecycleService() {
 
         FileLogger.log(this, "startGuard: imageCapture=$imageCapture")
 
-        // Переключаем FGS на camera|microphone
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForegroundCompat(withCamera = true)
         }
@@ -184,6 +197,7 @@ class GuardService : LifecycleService() {
             updateNotification("🟢 Охрана активна", "Слежу за движением")
         }
     }
+
     private fun applyGuardThresholds() {
         motionDetector?.sensitivity = this.motionSensitivity()
         if (BotSettings.isSoundEnabled(this)) {
@@ -194,8 +208,9 @@ class GuardService : LifecycleService() {
         } else {
             soundDetector.thresholdDb = 200.0
         }
-        FileLogger.log(this, "applyGuardThresholds: sensitivity=5")
+        FileLogger.log(this, "applyGuardThresholds: sensitivity=${this.motionSensitivity()}")
     }
+
     private fun startVkBot() {
         if (vkBot != null) return
 
@@ -218,6 +233,7 @@ class GuardService : LifecycleService() {
                         "ARM" -> startGuard()
                         "DISARM" -> stopGuard()
                         "PHOTO" -> takePhotoAndSend("📸 Снимок по запросу")
+                        "VIDEO" -> recordVideoAndSend("🎥 Видео по запросу")
                         "STATUS" -> {
                             val statusText = if (isRunning) "🟢 на охране" else "⚪ снята"
                             val soundStatus = if (BotSettings.isSoundEnabled(this@GuardService)) {
@@ -284,16 +300,157 @@ class GuardService : LifecycleService() {
 
         FileLogger.log(this, "VkBot запущен")
     }
+    private fun recordVideoAndSend(reason: String) {
+        if (!videoInProgress.compareAndSet(false, true)) {
+            FileLogger.log(this, "recordVideoAndSend: уже идёт запись, пропускаем")
+            return
+        }
 
-    private fun stopGuard() {
-        soundDetector.thresholdDb = 200.0
+        FileLogger.log(this, "recordVideoAndSend: старт, reason=$reason")
 
-        // Отвязываем камеру
+        // ⚠️ Останавливаем SoundDetector, чтобы не конфликтовать за микрофон
+        val soundWasRunning = soundDetector.isRunning
+        if (soundWasRunning) {
+            soundDetector.stop()
+            FileLogger.log(this, "recordVideoAndSend: SoundDetector остановлен")
+        }
+
+        // Отвязываем анализ и фото, чтобы освободить камеру под VideoCapture
         cameraProvider?.unbindAll()
         imageCapture = null
         motionDetector = null
 
-        // Переключаем FGS на microphone
+        // Создаём Recorder + VideoCapture
+        val recorder = Recorder.Builder()
+            .setQualitySelector(
+                QualitySelector.fromOrderedList(
+                    listOf(Quality.SD, Quality.LOWEST),
+                    FallbackStrategy.lowerQualityOrHigherThan(Quality.LOWEST)
+                )
+            )
+            .build()
+        videoCapture = VideoCapture.withOutput(recorder)
+
+        val providerFuture = ProcessCameraProvider.getInstance(this)
+        providerFuture.addListener({
+            try {
+                val provider = providerFuture.get()
+                cameraProvider = provider
+
+                val selector = if (BotSettings.isFrontCamera(this)) {
+                    CameraSelector.DEFAULT_FRONT_CAMERA
+                } else {
+                    CameraSelector.DEFAULT_BACK_CAMERA
+                }
+
+                provider.bindToLifecycle(this, selector, videoCapture!!)
+
+                val videoDir = File(cacheDir, "videos").apply { mkdirs() }
+                val timestamp = SimpleDateFormat("yyyyMMdd_HHmmss", Locale.US).format(java.util.Date())
+                val videoFile = File(videoDir, "alarm_$timestamp.mp4")
+
+                val outputOptions = FileOutputOptions.Builder(videoFile).build()
+
+                // ⚠️ withAudioEnabled() должен быть в цепочке prepareRecording
+                val pending = recorder.prepareRecording(this, outputOptions)
+                    .withAudioEnabled()
+
+                currentRecording = pending.start(ContextCompat.getMainExecutor(this)) { event ->
+                    when (event) {
+                        is VideoRecordEvent.Start -> {
+                            FileLogger.log(this@GuardService, "запись началась: ${videoFile.name}")
+                        }
+
+                        is VideoRecordEvent.Finalize -> {
+                            FileLogger.log(this@GuardService, "запись завершена, error=${event.hasError()}, file=${videoFile.name}, size=${videoFile.length()}")
+
+                            currentRecording = null
+                            videoCapture = null
+                            videoInProgress.set(false)
+
+                            // Восстанавливаем камеру/анализ, если охрана активна
+                            if (isRunning) {
+                                startCamera()
+                            } else {
+                                cameraProvider?.unbindAll()
+                                imageCapture = null
+                                motionDetector = null
+                            }
+
+                            // Восстанавливаем SoundDetector
+                            if (soundWasRunning && BotSettings.isSoundEnabled(this@GuardService)) {
+                                soundDetector.thresholdDb = 70.0
+                                soundDetector.start(lifecycleScope)
+                                FileLogger.log(this@GuardService, "recordVideoAndSend: SoundDetector восстановлен")
+                            }
+
+                            // Отправляем видео
+                            if (!event.hasError()) {
+                                FileLogger.log(this@GuardService, "запускаю upload видео")
+                                lifecycleScope.launch(Dispatchers.IO) {
+                                    try {
+                                        FileLogger.log(this@GuardService, "upload: начало")
+                                        val attachment = VkVideoUploader.uploadAndGetAttachment(
+                                            this@GuardService, videoFile
+                                        )
+                                        FileLogger.log(this@GuardService, "upload: attachment=$attachment")
+                                        if (attachment != null) {
+                                            Notifier.sendWithPhoto(
+                                                this@GuardService,
+                                                "🎥 ВИДЕО ТРЕВОГИ!\n$reason\nВремя: ${java.util.Date()}",
+                                                attachment
+                                            )
+                                        } else {
+                                            Notifier.send(
+                                                this@GuardService,
+                                                "🎥 ВИДЕО ТРЕВОГИ!\n$reason\n(видео не загрузилось)"
+                                            )
+                                        }
+                                    } catch (e: Exception) {
+                                        FileLogger.log(this@GuardService, "video upload exception ${e.message}")
+                                        Notifier.send(
+                                            this@GuardService,
+                                            "🎥 ВИДЕО ТРЕВОГИ!\n$reason\n(ошибка загрузки)"
+                                        )
+                                    } finally {
+                                        videoFile.delete()
+                                    }
+                                }
+                            } else {
+                                FileLogger.log(this@GuardService, "запись с ошибкой, файл удаляем")
+                                videoFile.delete()
+                            }
+                        }
+                    }
+                }
+
+                // Останавливаем через VIDEO_DURATION_MS
+                lifecycleScope.launch(Dispatchers.Main) {
+                    delay(VIDEO_DURATION_MS)
+                    currentRecording?.stop()
+                    currentRecording?.close()
+                }
+
+            } catch (e: Exception) {
+                FileLogger.log(this, "recordVideoAndSend: ошибка ${e.message}")
+                videoInProgress.set(false)
+                videoCapture = null
+                // Восстанавливаем SoundDetector при ошибке старта
+                if (soundWasRunning && BotSettings.isSoundEnabled(this)) {
+                    soundDetector.thresholdDb = 70.0
+                    soundDetector.start(lifecycleScope)
+                }
+                if (isRunning) startCamera()
+            }
+        }, ContextCompat.getMainExecutor(this))
+    }
+    private fun stopGuard() {
+        soundDetector.thresholdDb = 200.0
+
+        cameraProvider?.unbindAll()
+        imageCapture = null
+        motionDetector = null
+
         if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
             startForegroundCompat(withCamera = false)
         }
@@ -311,13 +468,24 @@ class GuardService : LifecycleService() {
         vkBot = null
         stopForeground(STOP_FOREGROUND_REMOVE)
         stopSelf()
+        currentRecording?.stop()
+        currentRecording?.close()
+        currentRecording = null
+        videoCapture = null
     }
 
+    @Volatile
     private var imageCapture: ImageCapture? = null
+
+    @Volatile
     private var motionDetector: MotionDetector? = null
 
     private fun startCamera() {
         if (!cameraInProgress.compareAndSet(false, true)) return
+
+        // Пересоздаём executor — изоляция от старых analyze()
+        cameraExecutor.shutdown()
+        cameraExecutor = Executors.newSingleThreadExecutor()
 
         cameraProvider?.unbindAll()
         imageCapture = null
@@ -337,7 +505,7 @@ class GuardService : LifecycleService() {
                 }
 
                 motionDetector = MotionDetector(
-                    sensitivity = 100,
+                    sensitivity = this.motionSensitivity(),   // ← из prefs, дефолт 5
                     frameSkip = frameSkip
                 ) {
                     onAlarm("🎥 Обнаружено движение!")
@@ -360,7 +528,7 @@ class GuardService : LifecycleService() {
                 provider.bindToLifecycle(this, selector, analysis, imageCapture)
 
                 val camName = if (BotSettings.isFrontCamera(this)) "front" else "back"
-                FileLogger.log(this, "камера привязана ($camName), frameSkip=\$frameSkip")
+                FileLogger.log(this, "камера привязана ($camName), frameSkip=$frameSkip")
             } catch (e: Exception) {
                 FileLogger.log(this, "ошибка камеры: ${e.message}")
             } finally {
@@ -377,7 +545,6 @@ class GuardService : LifecycleService() {
         }
         lastPhotoTime = now
 
-        // ⚠️ Если камера не привязана — привязываем
         if (imageCapture == null) {
             FileLogger.log(this, "takePhotoAndSend: камера не привязана, привязываем")
             startCamera()
@@ -391,6 +558,7 @@ class GuardService : LifecycleService() {
 
         takePhotoAndSendInternal(reason)
     }
+
     private fun takePhotoAndSendInternal(reason: String) {
         val capture = imageCapture
         if (capture == null) {
@@ -411,7 +579,6 @@ class GuardService : LifecycleService() {
                 override fun onImageSaved(outputFileResults: ImageCapture.OutputFileResults) {
                     FileLogger.log(this@GuardService, "onImageSaved: ${photoFile.name}")
 
-                    // ⚠️ Отвязываем камеру СРАЗУ после снимка (если охрана снята)
                     if (!isRunning) {
                         cameraProvider?.unbindAll()
                         imageCapture = null
@@ -419,7 +586,6 @@ class GuardService : LifecycleService() {
                         FileLogger.log(this@GuardService, "камера отвязана сразу после снимка")
                     }
 
-                    // Upload в VK — в фоне, не блокирует камеру
                     lifecycleScope.launch(Dispatchers.IO) {
                         try {
                             val attachment = VkPhotoUploader.uploadAndGetAttachment(this@GuardService, photoFile)
@@ -450,13 +616,20 @@ class GuardService : LifecycleService() {
         )
     }
 
+    // ⚠️ Вызывается из cameraExecutor / IO — перекидываем в main
     private fun onAlarm(reason: String) {
         if (!isRunning) {
             FileLogger.log(this, "onAlarm: охрана снята, игнорируем: $reason")
             return
         }
         FileLogger.log(this, "ТРЕВОГА: $reason")
-        takePhotoAndSend(reason)
+        lifecycleScope.launch(Dispatchers.Main) {
+            if (BotSettings.isAlarmVideo(this@GuardService)) {
+                recordVideoAndSend(reason)
+            } else {
+                takePhotoAndSend(reason)
+            }
+        }
     }
 
     // ---------- Battery ----------
@@ -480,11 +653,11 @@ class GuardService : LifecycleService() {
         val voltageV = voltageMv / 1000.0
 
         return """
-        🔋 Уровень: $level%
-        $charging
-        🌡 Температура: ${"%.1f".format(tempC)}°C
-        ⚡ Напряжение: ${"%.2f".format(voltageV)} В
-    """.trimIndent()
+            🔋 Уровень: $level%
+            $charging
+            🌡 Температура: ${"%.1f".format(tempC)}°C
+            ⚡ Напряжение: ${"%.2f".format(voltageV)} В
+        """.trimIndent()
     }
 
     // ---------- WakeLock ----------
@@ -513,6 +686,10 @@ class GuardService : LifecycleService() {
         soundDetector.stop()
         vkBot?.stop()
         vkBot = null
+        currentRecording?.stop()
+        currentRecording?.close()
+        currentRecording = null
+        videoCapture = null
         cameraProvider?.unbindAll()
         cameraExecutor.shutdown()
         releaseWakeLock()
